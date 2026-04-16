@@ -97,3 +97,32 @@ Generated files:
 - `reports/feeding_pipeline_report.json`
 
 These outputs are directly usable for continuous fine-tuning and governance review.
+
+## 7) Weekly automation runner (implemented)
+
+Script: `weekly_train_runner_fr.py`
+
+Orchestrates in sequence:
+
+1. continual feeding pipeline (`continuous_learning_pipeline_fr.py`)
+2. lightweight training (`train_chatbot_fr.py`)
+3. quick evaluation (`evaluate_model_fr.py`)
+4. single consolidated run report (`reports/weekly_train_runner_report.json`)
+
+Dry run first:
+
+```powershell
+.\.venv\Scripts\python.exe weekly_train_runner_fr.py --dry-run
+```
+
+Production weekly run:
+
+```powershell
+.\.venv\Scripts\python.exe weekly_train_runner_fr.py \
+  --base-model models/chatbot-fr-flan-t5-small-v2-signature \
+  --output-model models/chatbot-fr-flan-t5-small-weekly \
+  --train-max-samples 20000 \
+  --eval-samples 150
+```
+
+If a step fails, the runner stops and reports the failing step with command output tail.

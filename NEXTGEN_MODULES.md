@@ -4,6 +4,8 @@ This layer adds 10 advanced modules on top of existing Elibot capabilities.
 
 Feeding and continual-learning architecture: `ELIBOT_FEEDING_SYSTEM.md`
 
+Weekly automation runner: `weekly_train_runner_fr.py`
+
 ## Included modules
 
 1. Context Injection
