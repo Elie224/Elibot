@@ -18,6 +18,7 @@ import advanced_modules_fr as advanced
 import api_key_store_fr as key_store
 import chat_with_model_fr as runtime
 import context_summarizer_fr as context_summarizer
+import external_integrations_fr as external_integrations
 import intent_classifier_fr as intent_classifier
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 import response_verifier_fr as verifier
@@ -120,6 +121,13 @@ class ApiKeyCreateRequest(BaseModel):
 
 class ApiKeyRevokeRequest(BaseModel):
     key_id: str = Field(..., min_length=8)
+
+
+class IntegrationExecuteRequest(BaseModel):
+    provider: str = Field(..., min_length=2)
+    action: str = Field(..., min_length=2)
+    payload: dict = Field(default_factory=dict)
+    dry_run: bool = True
 
 
 @dataclass
@@ -820,6 +828,40 @@ def metrics_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str:
 def user_preferences(session_id: str, _ctx: dict = Depends(require_access("advanced"))) -> dict:
     prefs = advanced.get_user_preferences(session_id)
     return {"session_id": session_id, "preferences": prefs}
+
+
+@app.get("/integrations/providers")
+def integrations_providers(_ctx: dict = Depends(require_access("basic"))) -> dict:
+    return {
+        "providers": external_integrations.provider_status(),
+    }
+
+
+@app.post("/integrations/execute")
+def integrations_execute(request: IntegrationExecuteRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    try:
+        result = external_integrations.execute_integration(
+            provider=request.provider,
+            action=request.action,
+            payload=request.payload,
+            dry_run=bool(request.dry_run),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"integration error: {exc}")
+
+    advanced.write_audit(
+        {
+            "event": "integration_execute",
+            "provider": request.provider,
+            "action": request.action,
+            "dry_run": request.dry_run,
+            "principal": _ctx.get("principal"),
+            "role": _ctx.get("role"),
+        }
+    )
+    return result
 
 
 @app.get("/access/status")

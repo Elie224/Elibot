@@ -65,3 +65,9 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/admin/keys -Headers $h
 - `GET /access/status` (basic+)
 
 Returns current principal role, rate limit, and quota usage.
+
+## External tools integration
+
+Elibot also supports a unified integration API for GitHub, Notion, Google Drive, Discord, Slack, Trello and Jira.
+
+See `INTEGRATIONS_EXTERNAL.md` for endpoint usage, provider actions and required environment variables.
