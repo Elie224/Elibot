@@ -15,6 +15,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import automation_engine_fr as automation
 import chat_with_model_fr as runtime
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
+import response_verifier_fr as verifier
 
 
 DEFAULT_MODEL_DIR = os.getenv("MODEL_DIR", "models/chatbot-fr-flan-t5-small-v2-convfix")
@@ -325,6 +326,8 @@ def chat(request: ChatRequest) -> ChatResponse:
     in_domain = runtime.is_in_domain_query(user_text)
 
     direct = runtime.maybe_rule_reply(user_text, state.profile)
+    verifier_issues: list[str] = []
+    corrected_by_verifier = False
     if direct:
         answer = direct
     else:
@@ -363,8 +366,10 @@ def chat(request: ChatRequest) -> ChatResponse:
 
         answer = _tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         answer = runtime.clean_generated_text(answer)
-        if runtime.is_low_quality_answer(answer):
+        verifier_issues = verifier.detect_quality_issues(user_text, answer, in_domain=in_domain)
+        if runtime.is_low_quality_answer(answer) or verifier_issues:
             answer = runtime.fallback_reply(user_text)
+            corrected_by_verifier = True
 
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
@@ -378,6 +383,8 @@ def chat(request: ChatRequest) -> ChatResponse:
             "in_domain": in_domain,
             "used_rule_reply": bool(direct),
             "is_low_quality": runtime.is_low_quality_answer(answer),
+            "verifier_issues": verifier_issues,
+            "corrected_by_verifier": corrected_by_verifier,
             "profile": dict(state.profile),
         }
     )

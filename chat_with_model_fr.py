@@ -6,6 +6,7 @@ import re
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
+import response_verifier_fr as verifier
 
 
 DOMAIN_TOPICS = [
@@ -429,7 +430,8 @@ def main() -> None:
         answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         if args.clean_output:
             answer = clean_generated_text(answer)
-        if is_low_quality_answer(answer):
+        issues = verifier.detect_quality_issues(user_text, answer, in_domain=is_in_domain_query(user_text))
+        if is_low_quality_answer(answer) or issues:
             answer = fallback_reply(user_text)
         history.append(("Utilisateur", user_text))
         history.append(("Assistant", answer))
