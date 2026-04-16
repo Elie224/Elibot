@@ -24,11 +24,33 @@ $logFile = Join-Path $logsDir ("weekly_train_" + $timestamp + ".log")
 $lockFile = Join-Path $logsDir "weekly_train.lock"
 
 if (Test-Path $lockFile) {
-    "[$(Get-Date -Format o)] SKIP: another weekly run appears active (lock file present)." | Out-File -FilePath $logFile -Encoding utf8
-    exit 0
+    $hasActiveOwner = $false
+    try {
+        $lockRaw = Get-Content -Path $lockFile -Raw -ErrorAction Stop
+        $lockMeta = $lockRaw | ConvertFrom-Json -ErrorAction Stop
+        $lockPid = [int]$lockMeta.pid
+        if ($lockPid -gt 0 -and (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)) {
+            $hasActiveOwner = $true
+        }
+    }
+    catch {
+        $hasActiveOwner = $false
+    }
+
+    if ($hasActiveOwner) {
+        "[$(Get-Date -Format o)] SKIP: another weekly run appears active (lock owned by live process)." | Out-File -FilePath $logFile -Encoding utf8
+        exit 0
+    }
+
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    "[$(Get-Date -Format o)] INFO: stale weekly lock recovered." | Out-File -FilePath $logFile -Encoding utf8
 }
 
-New-Item -Path $lockFile -ItemType File -Force | Out-Null
+$lockPayload = @{
+    pid = $PID
+    created_at = (Get-Date -Format o)
+} | ConvertTo-Json -Compress
+$lockPayload | Set-Content -Path $lockFile -Encoding utf8
 
 "[$(Get-Date -Format o)] START weekly training run" | Out-File -FilePath $logFile -Encoding utf8
 "Python: $PythonPath" | Out-File -FilePath $logFile -Append -Encoding utf8
