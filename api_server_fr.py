@@ -5,6 +5,7 @@ from threading import Lock
 
 import torch
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -54,6 +55,206 @@ _tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL_DIR)
 _model = AutoModelForSeq2SeqLM.from_pretrained(DEFAULT_MODEL_DIR).to(_device)
 _model.eval()
 
+CHAT_UI_HTML = """
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Elibot Chat</title>
+    <style>
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --accent: #166534;
+            --accent-2: #0f766e;
+            --border: #e5e7eb;
+        }
+        body {
+            margin: 0;
+            background: radial-gradient(circle at top left, #dff4ec, var(--bg));
+            color: var(--text);
+            font-family: Segoe UI, Tahoma, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: stretch;
+        }
+        .app {
+            width: min(900px, 100%);
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            gap: 10px;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+        .header {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 12px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .title {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .session {
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .chat {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 50vh;
+        }
+        .msg {
+            max-width: 85%;
+            padding: 10px 12px;
+            border-radius: 12px;
+            white-space: pre-wrap;
+            line-height: 1.35;
+        }
+        .user {
+            align-self: flex-end;
+            background: #dcfce7;
+            border: 1px solid #bbf7d0;
+        }
+        .bot {
+            align-self: flex-start;
+            background: #ecfeff;
+            border: 1px solid #bae6fd;
+        }
+        .composer {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 8px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 10px;
+        }
+        textarea {
+            resize: none;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px;
+            font: inherit;
+            min-height: 44px;
+            max-height: 120px;
+        }
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 0 14px;
+            font: inherit;
+            cursor: pointer;
+            color: white;
+            background: var(--accent);
+        }
+        .secondary {
+            background: var(--accent-2);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="header">
+            <div class="title">Elibot</div>
+            <div class="session" id="session">Session: -</div>
+        </div>
+        <div class="chat" id="chat"></div>
+        <div class="composer">
+            <textarea id="input" placeholder="Ecris ton message..."></textarea>
+            <button id="send">Envoyer</button>
+            <button class="secondary" id="reset">Reset</button>
+        </div>
+    </div>
+    <script>
+        let sessionId = null;
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const resetBtn = document.getElementById('reset');
+        const sessionEl = document.getElementById('session');
+
+        function addMessage(text, cls) {
+            const el = document.createElement('div');
+            el.className = `msg ${cls}`;
+            el.textContent = text;
+            chat.appendChild(el);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = input.value.trim();
+            if (!message) return;
+            input.value = '';
+            addMessage(message, 'user');
+            sendBtn.disabled = true;
+
+            try {
+                const res = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, session_id: sessionId }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Erreur API');
+                sessionId = data.session_id;
+                sessionEl.textContent = `Session: ${sessionId}`;
+                addMessage(data.response, 'bot');
+            } catch (e) {
+                addMessage(`Erreur: ${e.message}`, 'bot');
+            } finally {
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        async function resetSession() {
+            if (!sessionId) {
+                chat.innerHTML = '';
+                return;
+            }
+            await fetch(`/reset/${sessionId}`, { method: 'POST' });
+            sessionId = null;
+            sessionEl.textContent = 'Session: -';
+            chat.innerHTML = '';
+            addMessage('Session reinitialisee.', 'bot');
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        resetBtn.addEventListener('click', resetSession);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        addMessage("Bonjour, je suis Elibot. Pose-moi une question.", 'bot');
+        input.focus();
+    </script>
+</body>
+</html>
+"""
+
 
 def _get_or_create_session(session_id: str | None) -> tuple[str, SessionState]:
     with _state_lock:
@@ -61,6 +262,11 @@ def _get_or_create_session(session_id: str | None) -> tuple[str, SessionState]:
         if sid not in _sessions:
             _sessions[sid] = SessionState()
         return sid, _sessions[sid]
+
+
+@app.get("/", response_class=HTMLResponse)
+def web_ui() -> str:
+    return CHAT_UI_HTML
 
 
 @app.get("/health")
