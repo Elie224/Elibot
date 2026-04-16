@@ -139,6 +139,12 @@ Register (default: Sunday 03:00):
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_weekly_task.ps1 -Day SUN -Time 03:00
 ```
+ 
+ Register for non-interactive execution (SYSTEM, requires admin/UAC):
+ 
+ ```powershell
+ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_weekly_task_system_admin.ps1 -Day SUN -Time 03:00
+ ```
 
 Manual dry-run test:
 
