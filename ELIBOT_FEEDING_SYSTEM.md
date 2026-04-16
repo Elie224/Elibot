@@ -109,6 +109,13 @@ Orchestrates in sequence:
 3. quick evaluation (`evaluate_model_fr.py`)
 4. single consolidated run report (`reports/weekly_train_runner_report.json`)
 
+By default, weekly generated datasets are now written to:
+
+- `reports/derived/chatbot_train_fr_feedback_weekly.csv`
+- `reports/derived/chatbot_train_fr_weekly_bundle.csv`
+
+This avoids accidental cleanup of intermediate datasets under `data/processed`.
+
 Dry run first:
 
 ```powershell

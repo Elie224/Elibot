@@ -22,8 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chat-log", default="data/logs/elibot_chat_events.jsonl")
     parser.add_argument("--audit-log", default="data/logs/elibot_audit.jsonl")
     parser.add_argument("--signature-dataset", default="data/processed/chatbot_train_fr_signature_v2_domain.csv")
-    parser.add_argument("--feedback-out", default="data/processed/chatbot_train_fr_feedback_weekly.csv")
-    parser.add_argument("--bundle-out", default="data/processed/chatbot_train_fr_weekly_bundle.csv")
+    parser.add_argument("--feedback-out", default="reports/derived/chatbot_train_fr_feedback_weekly.csv")
+    parser.add_argument("--bundle-out", default="reports/derived/chatbot_train_fr_weekly_bundle.csv")
     parser.add_argument("--feeding-report", default="reports/feeding_pipeline_report.json")
     parser.add_argument("--min-response-chars", type=int, default=40)
     parser.add_argument("--min-quality-score", type=float, default=0.65)
@@ -186,6 +186,13 @@ def main() -> None:
             report["status"] = "failed"
             report["failed_step"] = name
             break
+        if name == "feeding_pipeline" and not args.dry_run:
+            bundle_path = Path(args.bundle_out)
+            if not bundle_path.exists():
+                report["status"] = "failed"
+                report["failed_step"] = "feeding_pipeline"
+                report["failure_reason"] = f"bundle_not_found:{bundle_path}"
+                break
 
     if report.get("status") == "running":
         report["status"] = "ok"
