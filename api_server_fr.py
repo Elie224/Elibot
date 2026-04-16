@@ -5,7 +5,9 @@ import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Empty, Full, Queue
 from threading import Lock
+from threading import Thread
 
 import torch
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -51,6 +53,8 @@ DEFAULT_RATE_LIMIT_ADMIN = int(os.getenv("RATE_LIMIT_ADMIN_PER_MIN", "300"))
 DEFAULT_DAILY_QUOTA_BASIC = int(os.getenv("DAILY_QUOTA_BASIC", "800"))
 DEFAULT_DAILY_QUOTA_ADVANCED = int(os.getenv("DAILY_QUOTA_ADVANCED", "5000"))
 DEFAULT_DAILY_QUOTA_ADMIN = int(os.getenv("DAILY_QUOTA_ADMIN", "20000"))
+DEFAULT_INTEGRATION_QUEUE_MAX_SIZE = int(os.getenv("INTEGRATION_QUEUE_MAX_SIZE", "1000"))
+DEFAULT_INTEGRATION_MAX_PENDING_PER_PRINCIPAL = int(os.getenv("INTEGRATION_MAX_PENDING_PER_PRINCIPAL", "50"))
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
@@ -130,6 +134,13 @@ class IntegrationExecuteRequest(BaseModel):
     dry_run: bool = True
 
 
+class IntegrationAsyncRequest(BaseModel):
+    provider: str = Field(..., min_length=2)
+    action: str = Field(..., min_length=2)
+    payload: dict = Field(default_factory=dict)
+    dry_run: bool = True
+
+
 class IntegrationTemplateExecuteRequest(BaseModel):
     template_id: str = Field(..., min_length=3)
     variables: dict = Field(default_factory=dict)
@@ -166,6 +177,9 @@ _access_lock = Lock()
 
 _rate_state: dict[str, dict] = {}
 _quota_state: dict[str, dict] = {}
+_integration_queue: Queue = Queue(maxsize=max(1, DEFAULT_INTEGRATION_QUEUE_MAX_SIZE))
+_integration_jobs: dict[str, dict] = {}
+_integration_jobs_lock = Lock()
 
 _role_rank = {"basic": 0, "advanced": 1, "admin": 2}
 _role_rate_limit = {
@@ -178,6 +192,49 @@ _role_daily_quota = {
     "advanced": DEFAULT_DAILY_QUOTA_ADVANCED,
     "admin": DEFAULT_DAILY_QUOTA_ADMIN,
 }
+
+
+def _integration_worker_loop() -> None:
+    while True:
+        try:
+            job_id, item = _integration_queue.get(timeout=1.0)
+        except Empty:
+            continue
+
+        with _integration_jobs_lock:
+            job = _integration_jobs.get(job_id)
+            if job is None:
+                _integration_queue.task_done()
+                continue
+            job["status"] = "running"
+            job["started_at"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            result = external_integrations.execute_integration(
+                provider=item["provider"],
+                action=item["action"],
+                payload=item["payload"],
+                dry_run=bool(item["dry_run"]),
+            )
+            with _integration_jobs_lock:
+                job = _integration_jobs.get(job_id, {})
+                job["status"] = "done"
+                job["result"] = result
+                job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                _integration_jobs[job_id] = job
+        except Exception as exc:
+            with _integration_jobs_lock:
+                job = _integration_jobs.get(job_id, {})
+                job["status"] = "error"
+                job["error"] = str(exc)
+                job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                _integration_jobs[job_id] = job
+        finally:
+            _integration_queue.task_done()
+
+
+_integration_worker = Thread(target=_integration_worker_loop, name="elibot-integration-worker", daemon=True)
+_integration_worker.start()
 
 
 def _parse_api_keys(raw: str) -> dict[str, str]:
@@ -881,6 +938,150 @@ def integrations_execute(request: IntegrationExecuteRequest, _ctx: dict = Depend
         }
     )
     return result
+
+
+@app.post("/integrations/execute-async")
+def integrations_execute_async(request: IntegrationAsyncRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    principal = _ctx.get("principal", "unknown")
+
+    with _integration_jobs_lock:
+        principal_pending = sum(
+            1
+            for job in _integration_jobs.values()
+            if job.get("principal") == principal and job.get("status") in {"queued", "running"}
+        )
+        if principal_pending >= max(1, DEFAULT_INTEGRATION_MAX_PENDING_PER_PRINCIPAL):
+            raise HTTPException(status_code=429, detail="too many pending integration jobs for principal")
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    job_payload = {
+        "provider": request.provider,
+        "action": request.action,
+        "payload": request.payload,
+        "dry_run": bool(request.dry_run),
+    }
+
+    with _integration_jobs_lock:
+        _integration_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "created_at": created_at,
+            "principal": principal,
+            "role": _ctx.get("role"),
+            **job_payload,
+        }
+
+    try:
+        _integration_queue.put_nowait((job_id, job_payload))
+    except Full:
+        with _integration_jobs_lock:
+            _integration_jobs.pop(job_id, None)
+        raise HTTPException(status_code=429, detail="integration queue is full")
+
+    advanced.write_audit(
+        {
+            "event": "integration_execute_async",
+            "job_id": job_id,
+            "provider": request.provider,
+            "action": request.action,
+            "dry_run": request.dry_run,
+            "principal": principal,
+            "role": _ctx.get("role"),
+        }
+    )
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at": created_at,
+    }
+
+
+@app.get("/integrations/jobs/{job_id}")
+def integration_job_status(job_id: str, _ctx: dict = Depends(require_access("basic"))) -> dict:
+    with _integration_jobs_lock:
+        job = _integration_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found")
+
+        principal = _ctx.get("principal")
+        role = _ctx.get("role", "basic")
+        if role != "admin" and job.get("principal") != principal:
+            raise HTTPException(status_code=403, detail="job access denied")
+        return dict(job)
+
+
+@app.get("/integrations/metrics")
+def integrations_metrics(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    return {
+        "metrics": external_integrations.get_integration_metrics(),
+        "provider_health": external_integrations.get_provider_health(),
+        "queue": {
+            "size": _integration_queue.qsize(),
+            "max_size": DEFAULT_INTEGRATION_QUEUE_MAX_SIZE,
+        },
+    }
+
+
+@app.get("/dashboard/integrations", response_class=HTMLResponse)
+def integrations_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str:
+    metrics = external_integrations.get_integration_metrics()
+    health = external_integrations.get_provider_health()
+    by_provider = metrics.get("by_provider", {})
+
+    rows = []
+    for provider in sorted(by_provider.keys()):
+        m = by_provider.get(provider, {})
+        h = health.get(provider, {})
+        rows.append(
+            "<tr>"
+            f"<td>{provider}</td>"
+            f"<td>{m.get('total', 0)}</td>"
+            f"<td>{m.get('success', 0)}</td>"
+            f"<td>{m.get('error', 0)}</td>"
+            f"<td>{m.get('last_latency_ms', 0)}</td>"
+            f"<td>{h.get('consecutive_failures', 0)}</td>"
+            f"<td>{h.get('last_error', '')}</td>"
+            "</tr>"
+        )
+    table_rows = "".join(rows)
+
+    return f"""
+    <html>
+      <head>
+        <title>Elibot Integrations Dashboard</title>
+        <style>
+          body {{ font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #1f2937; }}
+          .card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin-bottom: 16px; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }}
+          th {{ background: #f3f4f6; }}
+        </style>
+      </head>
+      <body>
+        <h1>Elibot Integrations</h1>
+        <div class="card">
+          <div><strong>Total:</strong> {metrics.get('total', 0)}</div>
+          <div><strong>Success:</strong> {metrics.get('success', 0)}</div>
+          <div><strong>Error:</strong> {metrics.get('error', 0)}</div>
+          <div><strong>Updated:</strong> {metrics.get('updated_at', '')}</div>
+          <div><strong>Queue:</strong> {_integration_queue.qsize()} / {DEFAULT_INTEGRATION_QUEUE_MAX_SIZE}</div>
+        </div>
+        <div class="card">
+          <h3>By provider</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th><th>Total</th><th>Success</th><th>Error</th>
+                <th>Last latency ms</th><th>Consecutive failures</th><th>Last error</th>
+              </tr>
+            </thead>
+            <tbody>{table_rows}</tbody>
+          </table>
+        </div>
+      </body>
+    </html>
+    """
 
 
 @app.get("/integrations/templates")

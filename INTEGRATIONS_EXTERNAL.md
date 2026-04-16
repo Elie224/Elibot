@@ -14,9 +14,13 @@ Elibot exposes a unified integration layer for:
 
 - `GET /integrations/providers`
 - `POST /integrations/execute`
+- `POST /integrations/execute-async`
+- `GET /integrations/jobs/{job_id}`
 - `GET /integrations/templates`
 - `POST /integrations/execute-template`
 - `POST /automation/run-integrations`
+- `GET /integrations/metrics` (admin)
+- `GET /dashboard/integrations` (admin)
 
 `/integrations/execute` is protected with role `advanced`.
 
@@ -60,6 +64,15 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/integrations/execute -
 - `JIRA_EMAIL`
 - `JIRA_API_TOKEN`
 - `JIRA_PROJECT_KEY`
+
+## Resilience and queue env variables
+
+- `INTEGRATION_MAX_RETRIES` (default `2`)
+- `INTEGRATION_BACKOFF_BASE_MS` (default `300`)
+- `INTEGRATION_CIRCUIT_FAIL_THRESHOLD` (default `3`)
+- `INTEGRATION_CIRCUIT_OPEN_SECONDS` (default `60`)
+- `INTEGRATION_QUEUE_MAX_SIZE` (default `1000`)
+- `INTEGRATION_MAX_PENDING_PER_PRINCIPAL` (default `50`)
 
 ## Actions supported
 
@@ -118,3 +131,25 @@ $body = @'
 '@
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/automation/run-integrations -Headers $headers -Body $body
 ```
+
+## Async execution queue
+
+Submit an async integration job:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-advanced-key"; "Content-Type" = "application/json" }
+$job = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/integrations/execute-async -Headers $headers -Body '{"provider":"slack","action":"send_message","payload":{"text":"Async test"},"dry_run":true}'
+$job
+```
+
+Check job status:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-advanced-key" }
+Invoke-RestMethod -Method Get -Uri ("http://127.0.0.1:8000/integrations/jobs/" + $job.job_id) -Headers $headers
+```
+
+## Operations dashboard
+
+- Metrics JSON: `GET /integrations/metrics` (admin)
+- HTML dashboard: `GET /dashboard/integrations` (admin)

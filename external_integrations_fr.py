@@ -3,12 +3,118 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
+from threading import Lock
 from typing import Any
 
 
 DEFAULT_TIMEOUT_S = 20
+INTEGRATION_MAX_RETRIES = int(os.getenv("INTEGRATION_MAX_RETRIES", "2"))
+INTEGRATION_BACKOFF_BASE_MS = int(os.getenv("INTEGRATION_BACKOFF_BASE_MS", "300"))
+INTEGRATION_CIRCUIT_FAIL_THRESHOLD = int(os.getenv("INTEGRATION_CIRCUIT_FAIL_THRESHOLD", "3"))
+INTEGRATION_CIRCUIT_OPEN_SECONDS = int(os.getenv("INTEGRATION_CIRCUIT_OPEN_SECONDS", "60"))
+
+_state_lock = Lock()
+_provider_health: dict[str, dict[str, Any]] = {}
+_integration_metrics: dict[str, Any] = {
+    "total": 0,
+    "success": 0,
+    "error": 0,
+    "updated_at": "",
+    "by_provider": {},
+}
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _ensure_provider_state(provider: str) -> None:
+    if provider not in _provider_health:
+        _provider_health[provider] = {
+            "consecutive_failures": 0,
+            "circuit_open_until": 0.0,
+            "last_error": "",
+            "last_failure_at": "",
+            "last_success_at": "",
+        }
+    if provider not in _integration_metrics["by_provider"]:
+        _integration_metrics["by_provider"][provider] = {
+            "total": 0,
+            "success": 0,
+            "error": 0,
+            "last_latency_ms": 0,
+            "updated_at": "",
+        }
+
+
+def _mark_success(provider: str, latency_ms: int) -> None:
+    with _state_lock:
+        _ensure_provider_state(provider)
+        _provider_health[provider]["consecutive_failures"] = 0
+        _provider_health[provider]["circuit_open_until"] = 0.0
+        _provider_health[provider]["last_success_at"] = _now_iso()
+        _provider_health[provider]["last_error"] = ""
+
+        _integration_metrics["total"] += 1
+        _integration_metrics["success"] += 1
+        _integration_metrics["updated_at"] = _now_iso()
+
+        byp = _integration_metrics["by_provider"][provider]
+        byp["total"] += 1
+        byp["success"] += 1
+        byp["last_latency_ms"] = int(latency_ms)
+        byp["updated_at"] = _now_iso()
+
+
+def _mark_error(provider: str, error_message: str) -> None:
+    with _state_lock:
+        _ensure_provider_state(provider)
+        failures = int(_provider_health[provider]["consecutive_failures"]) + 1
+        _provider_health[provider]["consecutive_failures"] = failures
+        _provider_health[provider]["last_error"] = str(error_message)[:400]
+        _provider_health[provider]["last_failure_at"] = _now_iso()
+        if failures >= INTEGRATION_CIRCUIT_FAIL_THRESHOLD:
+            _provider_health[provider]["circuit_open_until"] = time.time() + max(1, INTEGRATION_CIRCUIT_OPEN_SECONDS)
+
+        _integration_metrics["total"] += 1
+        _integration_metrics["error"] += 1
+        _integration_metrics["updated_at"] = _now_iso()
+
+        byp = _integration_metrics["by_provider"][provider]
+        byp["total"] += 1
+        byp["error"] += 1
+        byp["updated_at"] = _now_iso()
+
+
+def get_provider_health() -> dict[str, Any]:
+    status = provider_status()
+    with _state_lock:
+        for provider in status:
+            _ensure_provider_state(provider)
+        return {
+            k: dict(v)
+            for k, v in _provider_health.items()
+        }
+
+
+def get_integration_metrics() -> dict[str, Any]:
+    status = provider_status()
+    with _state_lock:
+        for provider in status:
+            _ensure_provider_state(provider)
+        return {
+            "total": int(_integration_metrics["total"]),
+            "success": int(_integration_metrics["success"]),
+            "error": int(_integration_metrics["error"]),
+            "updated_at": str(_integration_metrics.get("updated_at", "")),
+            "by_provider": {
+                k: dict(v)
+                for k, v in _integration_metrics["by_provider"].items()
+            },
+        }
 
 
 def _http_json(
@@ -223,7 +329,7 @@ def build_template_request(template_id: str, variables: dict[str, Any]) -> dict[
     }
 
 
-def execute_integration(provider: str, action: str, payload: dict[str, Any], dry_run: bool = True) -> dict[str, Any]:
+def _execute_integration_once(provider: str, action: str, payload: dict[str, Any], dry_run: bool) -> dict[str, Any]:
     provider = (provider or "").strip().lower()
     action = (action or "").strip().lower()
 
@@ -386,3 +492,43 @@ def execute_integration(provider: str, action: str, payload: dict[str, Any], dry
         return {"provider": provider, "action": action, "result": res}
 
     raise ValueError("unsupported provider/action combination")
+
+
+def execute_integration(provider: str, action: str, payload: dict[str, Any], dry_run: bool = True) -> dict[str, Any]:
+    provider = (provider or "").strip().lower()
+    action = (action or "").strip().lower()
+
+    if dry_run:
+        return _execute_integration_once(provider=provider, action=action, payload=payload, dry_run=True)
+
+    with _state_lock:
+        _ensure_provider_state(provider)
+        open_until = float(_provider_health[provider].get("circuit_open_until", 0.0))
+    if open_until > time.time():
+        raise RuntimeError(f"circuit open for provider '{provider}'")
+
+    attempts = max(1, INTEGRATION_MAX_RETRIES + 1)
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        started = time.time()
+        try:
+            result = _execute_integration_once(provider=provider, action=action, payload=payload, dry_run=False)
+            latency_ms = int((time.time() - started) * 1000)
+            _mark_success(provider, latency_ms=latency_ms)
+            return {
+                **result,
+                "retry": {
+                    "attempt": attempt,
+                    "max_attempts": attempts,
+                    "latency_ms": latency_ms,
+                },
+            }
+        except Exception as exc:
+            last_exc = exc
+            _mark_error(provider, str(exc))
+            if attempt < attempts:
+                backoff_s = (max(1, INTEGRATION_BACKOFF_BASE_MS) / 1000.0) * attempt
+                time.sleep(backoff_s)
+
+    raise RuntimeError(f"integration failed after retries: {last_exc}")

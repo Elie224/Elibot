@@ -71,3 +71,10 @@ Returns current principal role, rate limit, and quota usage.
 Elibot also supports a unified integration API for GitHub, Notion, Google Drive, Discord, Slack, Trello and Jira.
 
 See `INTEGRATIONS_EXTERNAL.md` for endpoint usage, provider actions and required environment variables.
+
+Additional secured endpoints:
+
+- `POST /integrations/execute-async` (advanced)
+- `GET /integrations/jobs/{job_id}` (owner or admin)
+- `GET /integrations/metrics` (admin)
+- `GET /dashboard/integrations` (admin)
