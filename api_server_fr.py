@@ -21,6 +21,7 @@ import api_key_store_fr as key_store
 import chat_with_model_fr as runtime
 import context_summarizer_fr as context_summarizer
 import external_integrations_fr as external_integrations
+import integration_jobs_store_fr as jobs_store
 import intent_classifier_fr as intent_classifier
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 import response_verifier_fr as verifier
@@ -196,59 +197,21 @@ _role_daily_quota = {
 }
 
 
-def _parse_iso_ts(value: str | None) -> float:
-    if not value:
-        return 0.0
-    try:
-        normalized = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized).timestamp()
-    except Exception:
-        return 0.0
-
-
 def _save_integration_jobs_locked() -> None:
-    DEFAULT_INTEGRATION_JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "jobs": _integration_jobs,
-    }
-    DEFAULT_INTEGRATION_JOBS_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    jobs_store.save_jobs(
+        path=DEFAULT_INTEGRATION_JOBS_PATH,
+        jobs=_integration_jobs,
+        updated_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
 def _purge_expired_jobs_locked() -> int:
-    now_ts = time.time()
-    ttl = max(60, DEFAULT_INTEGRATION_JOB_TTL_SECONDS)
-    removed = 0
-
-    for job_id, job in list(_integration_jobs.items()):
-        status = str(job.get("status") or "")
-        if status in {"queued", "running"}:
-            continue
-
-        finished_ts = _parse_iso_ts(job.get("finished_at"))
-        if not finished_ts:
-            created_ts = _parse_iso_ts(job.get("created_at"))
-            finished_ts = created_ts
-        if finished_ts and (now_ts - finished_ts) > ttl:
-            _integration_jobs.pop(job_id, None)
-            removed += 1
-
-    return removed
+    return jobs_store.purge_expired_jobs(_integration_jobs, ttl_seconds=DEFAULT_INTEGRATION_JOB_TTL_SECONDS)
 
 
 def _load_integration_jobs() -> None:
-    if not DEFAULT_INTEGRATION_JOBS_PATH.exists():
-        return
-    try:
-        raw = json.loads(DEFAULT_INTEGRATION_JOBS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return
-
-    jobs = raw.get("jobs")
-    if not isinstance(jobs, dict):
+    jobs = jobs_store.load_jobs(DEFAULT_INTEGRATION_JOBS_PATH)
+    if not jobs:
         return
 
     with _integration_jobs_lock:
@@ -1015,11 +978,7 @@ def integrations_execute_async(request: IntegrationAsyncRequest, _ctx: dict = De
 
     with _integration_jobs_lock:
         _purge_expired_jobs_locked()
-        principal_pending = sum(
-            1
-            for job in _integration_jobs.values()
-            if job.get("principal") == principal and job.get("status") in {"queued", "running"}
-        )
+        principal_pending = jobs_store.pending_for_principal(_integration_jobs, principal)
         if principal_pending >= max(1, DEFAULT_INTEGRATION_MAX_PENDING_PER_PRINCIPAL):
             raise HTTPException(status_code=429, detail="too many pending integration jobs for principal")
 
@@ -1096,31 +1055,93 @@ def integration_jobs_purge(_ctx: dict = Depends(require_access("admin"))) -> dic
     }
 
 
+@app.get("/integrations/alerts")
+def integrations_alerts(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    return {
+        "alerts": external_integrations.get_provider_alerts(),
+    }
+
+
+@app.post("/integrations/alerts/{provider}/ack")
+def integrations_alerts_ack(provider: str, _ctx: dict = Depends(require_access("admin"))) -> dict:
+    try:
+        alert = external_integrations.acknowledge_provider_alert(
+            provider=provider,
+            acknowledged_by=_ctx.get("principal", "admin"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    advanced.write_audit(
+        {
+            "event": "integration_alert_ack",
+            "provider": provider,
+            "principal": _ctx.get("principal"),
+            "role": _ctx.get("role"),
+        }
+    )
+    return {
+        "provider": provider,
+        "alert": alert,
+    }
+
+
 @app.get("/integrations/metrics")
 def integrations_metrics(_ctx: dict = Depends(require_access("admin"))) -> dict:
     with _integration_jobs_lock:
         _purge_expired_jobs_locked()
         _save_integration_jobs_locked()
-        queued = sum(1 for job in _integration_jobs.values() if job.get("status") == "queued")
-        running = sum(1 for job in _integration_jobs.values() if job.get("status") == "running")
-        finished = sum(1 for job in _integration_jobs.values() if job.get("status") in {"done", "error"})
+        counters = jobs_store.count_jobs_by_status(_integration_jobs)
 
     return {
         "metrics": external_integrations.get_integration_metrics(),
         "provider_health": external_integrations.get_provider_health(),
+        "provider_alerts": external_integrations.get_provider_alerts(),
         "queue": {
             "size": _integration_queue.qsize(),
             "max_size": DEFAULT_INTEGRATION_QUEUE_MAX_SIZE,
         },
         "jobs": {
-            "total": queued + running + finished,
-            "queued": queued,
-            "running": running,
-            "finished": finished,
+            "total": counters["total"],
+            "queued": counters["queued"],
+            "running": counters["running"],
+            "finished": counters["finished"],
             "ttl_seconds": DEFAULT_INTEGRATION_JOB_TTL_SECONDS,
             "storage_path": str(DEFAULT_INTEGRATION_JOBS_PATH),
         },
     }
+
+
+@app.get("/integrations/metrics.csv", response_class=PlainTextResponse)
+def integrations_metrics_csv(_ctx: dict = Depends(require_access("admin"))) -> str:
+    metrics = external_integrations.get_integration_metrics()
+    health = external_integrations.get_provider_health()
+    alerts = external_integrations.get_provider_alerts()
+    by_provider = metrics.get("by_provider", {})
+
+    lines = [
+        "provider,total,success,error,last_latency_ms,consecutive_failures,circuit_open_until,alert_open,alert_acknowledged",
+    ]
+    for provider in sorted(by_provider.keys()):
+        m = by_provider.get(provider, {})
+        h = health.get(provider, {})
+        a = alerts.get(provider, {})
+        lines.append(
+            ",".join(
+                [
+                    provider,
+                    str(m.get("total", 0)),
+                    str(m.get("success", 0)),
+                    str(m.get("error", 0)),
+                    str(m.get("last_latency_ms", 0)),
+                    str(h.get("consecutive_failures", 0)),
+                    str(h.get("circuit_open_until", 0.0)),
+                    str(a.get("is_open", False)),
+                    str(a.get("acknowledged", True)),
+                ]
+            )
+        )
+    return "\n".join(lines)
 
 
 @app.get("/dashboard/integrations", response_class=HTMLResponse)
@@ -1128,9 +1149,7 @@ def integrations_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str
     with _integration_jobs_lock:
         _purge_expired_jobs_locked()
         _save_integration_jobs_locked()
-        queued_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") == "queued")
-        running_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") == "running")
-        finished_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") in {"done", "error"})
+        counters = jobs_store.count_jobs_by_status(_integration_jobs)
 
     metrics = external_integrations.get_integration_metrics()
     health = external_integrations.get_provider_health()
@@ -1173,7 +1192,7 @@ def integrations_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str
           <div><strong>Error:</strong> {metrics.get('error', 0)}</div>
           <div><strong>Updated:</strong> {metrics.get('updated_at', '')}</div>
           <div><strong>Queue:</strong> {_integration_queue.qsize()} / {DEFAULT_INTEGRATION_QUEUE_MAX_SIZE}</div>
-                    <div><strong>Jobs queued/running/finished:</strong> {queued_jobs} / {running_jobs} / {finished_jobs}</div>
+                      <div><strong>Jobs queued/running/finished:</strong> {counters['queued']} / {counters['running']} / {counters['finished']}</div>
                     <div><strong>Jobs TTL (s):</strong> {DEFAULT_INTEGRATION_JOB_TTL_SECONDS}</div>
         </div>
         <div class="card">

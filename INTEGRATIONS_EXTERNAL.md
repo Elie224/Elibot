@@ -17,10 +17,13 @@ Elibot exposes a unified integration layer for:
 - `POST /integrations/execute-async`
 - `GET /integrations/jobs/{job_id}`
 - `POST /integrations/jobs/purge` (admin)
+- `GET /integrations/alerts` (admin)
+- `POST /integrations/alerts/{provider}/ack` (admin)
 - `GET /integrations/templates`
 - `POST /integrations/execute-template`
 - `POST /automation/run-integrations`
 - `GET /integrations/metrics` (admin)
+- `GET /integrations/metrics.csv` (admin)
 - `GET /dashboard/integrations` (admin)
 
 `/integrations/execute` is protected with role `advanced`.
@@ -157,7 +160,24 @@ Invoke-RestMethod -Method Get -Uri ("http://127.0.0.1:8000/integrations/jobs/" +
 ## Operations dashboard
 
 - Metrics JSON: `GET /integrations/metrics` (admin)
+- Metrics CSV: `GET /integrations/metrics.csv` (admin)
 - HTML dashboard: `GET /dashboard/integrations` (admin)
+
+## Alerts acknowledge workflow
+
+List provider alerts:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-admin-key" }
+Invoke-RestMethod -Method Get -Uri http://127.0.0.1:8000/integrations/alerts -Headers $headers
+```
+
+Acknowledge an alert:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-admin-key" }
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/integrations/alerts/github/ack -Headers $headers
+```
 
 ## Jobs retention and purge
 

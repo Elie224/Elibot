@@ -21,6 +21,7 @@ INTEGRATION_ALERT_WEBHOOK_URL = os.getenv("INTEGRATION_ALERT_WEBHOOK_URL", "").s
 
 _state_lock = Lock()
 _provider_health: dict[str, dict[str, Any]] = {}
+_provider_alerts: dict[str, dict[str, Any]] = {}
 _integration_metrics: dict[str, Any] = {
     "total": 0,
     "success": 0,
@@ -34,6 +35,7 @@ def _persist_runtime_state_locked() -> None:
     INTEGRATION_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "provider_health": _provider_health,
+        "provider_alerts": _provider_alerts,
         "integration_metrics": _integration_metrics,
         "saved_at": _now_iso(),
     }
@@ -49,9 +51,12 @@ def _load_runtime_state() -> None:
     try:
         raw = json.loads(INTEGRATION_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
         ph = raw.get("provider_health")
+        pa = raw.get("provider_alerts")
         im = raw.get("integration_metrics")
         if isinstance(ph, dict):
             _provider_health.update(ph)
+        if isinstance(pa, dict):
+            _provider_alerts.update(pa)
         if isinstance(im, dict):
             _integration_metrics.update(im)
             by_provider = im.get("by_provider")
@@ -99,6 +104,15 @@ def _ensure_provider_state(provider: str) -> None:
             "last_latency_ms": 0,
             "updated_at": "",
         }
+    if provider not in _provider_alerts:
+        _provider_alerts[provider] = {
+            "is_open": False,
+            "acknowledged": True,
+            "opened_at": "",
+            "acknowledged_at": "",
+            "acknowledged_by": "",
+            "last_message": "",
+        }
 
 
 def _mark_success(provider: str, latency_ms: int) -> None:
@@ -108,6 +122,7 @@ def _mark_success(provider: str, latency_ms: int) -> None:
         _provider_health[provider]["circuit_open_until"] = 0.0
         _provider_health[provider]["last_success_at"] = _now_iso()
         _provider_health[provider]["last_error"] = ""
+        _provider_alerts[provider]["is_open"] = False
 
         _integration_metrics["total"] += 1
         _integration_metrics["success"] += 1
@@ -139,6 +154,14 @@ def _mark_error(provider: str, error_message: str) -> None:
                 should_alert = True
                 alert_until = next_open_until
                 alert_failures = failures
+                _provider_alerts[provider] = {
+                    "is_open": True,
+                    "acknowledged": False,
+                    "opened_at": _now_iso(),
+                    "acknowledged_at": "",
+                    "acknowledged_by": "",
+                    "last_message": str(error_message)[:400],
+                }
 
         _integration_metrics["total"] += 1
         _integration_metrics["error"] += 1
@@ -168,6 +191,34 @@ def get_provider_health() -> dict[str, Any]:
             k: dict(v)
             for k, v in _provider_health.items()
         }
+
+
+def get_provider_alerts() -> dict[str, Any]:
+    status = provider_status()
+    with _state_lock:
+        for provider in status:
+            _ensure_provider_state(provider)
+        return {
+            k: dict(v)
+            for k, v in _provider_alerts.items()
+        }
+
+
+def acknowledge_provider_alert(provider: str, acknowledged_by: str = "admin") -> dict[str, Any]:
+    provider = (provider or "").strip().lower()
+    status = provider_status()
+    if provider not in status:
+        raise ValueError(f"unsupported provider: {provider}")
+
+    with _state_lock:
+        _ensure_provider_state(provider)
+        alert = _provider_alerts[provider]
+        alert["acknowledged"] = True
+        alert["acknowledged_at"] = _now_iso()
+        alert["acknowledged_by"] = str(acknowledged_by)[:120]
+        _provider_alerts[provider] = alert
+        _persist_runtime_state_locked()
+        return dict(alert)
 
 
 def get_integration_metrics() -> dict[str, Any]:

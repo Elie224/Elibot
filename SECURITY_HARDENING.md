@@ -77,7 +77,10 @@ Additional secured endpoints:
 - `POST /integrations/execute-async` (advanced)
 - `GET /integrations/jobs/{job_id}` (owner or admin)
 - `POST /integrations/jobs/purge` (admin)
+- `GET /integrations/alerts` (admin)
+- `POST /integrations/alerts/{provider}/ack` (admin)
 - `GET /integrations/metrics` (admin)
+- `GET /integrations/metrics.csv` (admin)
 - `GET /dashboard/integrations` (admin)
 
 Operational controls:
