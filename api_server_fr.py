@@ -23,6 +23,8 @@ import context_summarizer_fr as context_summarizer
 import external_integrations_fr as external_integrations
 import integration_jobs_store_fr as jobs_store
 import intent_classifier_fr as intent_classifier
+import nextgen_orchestrator_fr as nextgen
+import task_memory_fr as task_memory
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 import response_verifier_fr as verifier
 
@@ -161,6 +163,25 @@ class IntegrationAutomationRunRequest(BaseModel):
     dry_run: bool = True
     max_actions: int = Field(default=5, ge=1, le=20)
     stop_on_error: bool = True
+
+
+class TaskUpsertRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=2)
+    steps: list[str] = Field(default_factory=list)
+
+
+class TaskProgressRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    task_id: str = Field(..., min_length=8)
+    done_step: str | None = None
+    error: str | None = None
+    mark_done: bool = False
+
+
+class SandboxActionRequest(BaseModel):
+    action: str = Field(..., min_length=2)
+    payload: dict = Field(default_factory=dict)
 
 
 @dataclass
@@ -634,6 +655,15 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
     intent = intent_classifier.classify_intent(user_text)
     skill = advanced.detect_skill(user_text)
     tone = advanced.infer_tone(user_text, state.profile, intent)
+    persona = nextgen.detect_persona(user_text=user_text, intent=intent, skill=skill)
+    session_tasks = task_memory.list_tasks(sid, include_done=False)
+    tool_decision = nextgen.select_tools(
+        user_text=user_text,
+        intent=intent,
+        profile=state.profile,
+        has_tasks=bool(session_tasks),
+    )
+    state_trace = nextgen.build_state_machine_trace(tool_decision)
 
     direct = runtime.maybe_rule_reply(user_text, state.profile)
     verifier_issues: list[str] = []
@@ -666,7 +696,14 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
     else:
         summary_context = context_summarizer.format_summary_context(state.summary)
         knowledge_context = format_knowledge_context(_kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K))
-        combined_context = "\n".join([x for x in [summary_context, knowledge_context] if x]).strip()
+        injected = nextgen.build_context_injection(
+            user_text=user_text,
+            summary=summary_context,
+            knowledge_context=knowledge_context,
+            profile=state.profile,
+            tasks=session_tasks,
+        )
+        combined_context = injected.get("injected_context", "")
 
         prompt = runtime.build_prompt(
             system_prompt=DEFAULT_SYSTEM_PROMPT,
@@ -713,15 +750,35 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
     if not compliance.get("ok", True):
         answer = runtime.fallback_reply(user_text)
 
+    guarded = nextgen.apply_advanced_guardrails(
+        user_text=user_text,
+        answer=answer,
+        in_domain=in_domain,
+        verifier_issues=verifier_issues,
+    )
+    answer = guarded["answer"]
+
+    internal_scores = nextgen.compute_internal_scores(
+        answer=answer,
+        in_domain=in_domain,
+        verifier_issues=verifier_issues,
+        tools_selected=tool_decision.get("selected", []),
+    )
+
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
     state.user_turn_count += 1
 
     if state.user_turn_count % max(1, DEFAULT_SUMMARY_INTERVAL) == 0:
-        state.summary = context_summarizer.build_dynamic_summary(
+        base_summary = context_summarizer.build_dynamic_summary(
             history=state.history,
             profile=state.profile,
             previous_summary=state.summary,
+            max_chars=DEFAULT_SUMMARY_MAX_CHARS,
+        )
+        state.summary = nextgen.advanced_memory_compression(
+            previous_summary=base_summary,
+            history=state.history,
             max_chars=DEFAULT_SUMMARY_MAX_CHARS,
         )
 
@@ -735,11 +792,16 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
             "intent": intent,
             "skill": skill,
             "tone": tone,
+            "persona": persona,
+            "tool_decision": tool_decision,
+            "state_trace": state_trace,
             "used_rule_reply": bool(direct),
             "is_low_quality": runtime.is_low_quality_answer(answer),
             "verifier_issues": verifier_issues,
             "corrected_by_verifier": corrected_by_verifier,
             "compliance": compliance,
+            "guardrails": guarded,
+            "internal_scores": internal_scores,
             "summary": state.summary,
             "profile": dict(state.profile),
         }
@@ -762,11 +824,27 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
             "intent": intent,
             "skill": skill,
             "tone": tone,
+            "persona": persona,
             "metacognition": advanced.build_metacognition(
                 user_text=user_text,
                 intent=intent,
                 selected_sources=[x.get("source", "") for x in _kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K)],
             ),
+            "tool_decision": tool_decision,
+            "state_trace": state_trace,
+            "internal_scores": internal_scores,
+        }
+    )
+
+    nextgen.write_internal_metrics(
+        {
+            "session_id": sid,
+            "intent": intent,
+            "persona": persona,
+            "tool_decision": tool_decision,
+            "state_trace": state_trace,
+            "internal_scores": internal_scores,
+            "guardrails": guarded,
         }
     )
 
@@ -793,6 +871,92 @@ def session_summary(session_id: str, _ctx: dict = Depends(require_access("basic"
             "user_turn_count": state.user_turn_count,
             "history_items": len(state.history),
         }
+
+
+@app.get("/nextgen/decision")
+def nextgen_decision(message: str, session_id: str | None = None, _ctx: dict = Depends(require_access("basic"))) -> dict:
+    sid, state = _get_or_create_session(session_id)
+    intent = intent_classifier.classify_intent(message.strip())
+    skill = advanced.detect_skill(message)
+    persona = nextgen.detect_persona(message, intent, skill)
+    tasks = task_memory.list_tasks(sid, include_done=False)
+    tool_decision = nextgen.select_tools(message, intent, state.profile, bool(tasks))
+    trace = nextgen.build_state_machine_trace(tool_decision)
+    summary_context = context_summarizer.format_summary_context(state.summary)
+    knowledge_context = format_knowledge_context(_kb.search(message, top_k=DEFAULT_KNOWLEDGE_TOP_K))
+    injected = nextgen.build_context_injection(
+        user_text=message,
+        summary=summary_context,
+        knowledge_context=knowledge_context,
+        profile=state.profile,
+        tasks=tasks,
+    )
+    return {
+        "session_id": sid,
+        "intent": intent,
+        "skill": skill,
+        "persona": persona,
+        "tool_decision": tool_decision,
+        "state_trace": trace,
+        "context_injection": injected,
+    }
+
+
+@app.post("/sandbox/simulate-action")
+def sandbox_simulate_action(request: SandboxActionRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    return nextgen.sandbox_simulate_action(request.action, request.payload)
+
+
+@app.post("/tasks/upsert")
+def tasks_upsert(request: TaskUpsertRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    created = task_memory.upsert_task(request.session_id, request.title, request.steps)
+    return {"task": created}
+
+
+@app.post("/tasks/progress")
+def tasks_progress(request: TaskProgressRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    try:
+        updated = task_memory.record_progress(
+            session_id=request.session_id,
+            task_id=request.task_id,
+            done_step=request.done_step,
+            error=request.error,
+            mark_done=request.mark_done,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"task": updated}
+
+
+@app.get("/tasks/{session_id}")
+def tasks_list(session_id: str, include_done: bool = False, _ctx: dict = Depends(require_access("basic"))) -> dict:
+    tasks = task_memory.list_tasks(session_id=session_id, include_done=include_done)
+    return {
+        "session_id": session_id,
+        "count": len(tasks),
+        "tasks": tasks,
+    }
+
+
+@app.get("/nextgen/distillation-plan")
+def nextgen_distillation_plan(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    return nextgen.build_distillation_plan()
+
+
+@app.get("/metrics/internal-scores")
+def metrics_internal_scores(limit: int = 40, _ctx: dict = Depends(require_access("admin"))) -> dict:
+    path = nextgen.INTERNAL_METRICS_PATH
+    if not path.exists():
+        return {"count": 0, "items": []}
+
+    lines = path.read_text(encoding="utf-8").splitlines()[-max(1, min(limit, 200)):]
+    items = []
+    for line in lines:
+        try:
+            items.append(json.loads(line))
+        except Exception:
+            continue
+    return {"count": len(items), "items": items}
 
 
 @app.post("/automation/plan", response_model=AutomationPlanResponse)
