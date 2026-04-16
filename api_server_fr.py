@@ -14,6 +14,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 import automation_engine_fr as automation
 import chat_with_model_fr as runtime
+import intent_classifier_fr as intent_classifier
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 import response_verifier_fr as verifier
 
@@ -68,6 +69,16 @@ class AutomationRunResponse(BaseModel):
     plan: dict
     source: str
     execution: dict
+
+
+class IntentClassifyRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+
+
+class IntentClassifyResponse(BaseModel):
+    intent: str
+    confidence: float
+    reasons: list[str]
 
 
 @dataclass
@@ -324,10 +335,30 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     runtime.update_profile_from_user_text(user_text, state.profile)
     in_domain = runtime.is_in_domain_query(user_text)
+    intent = intent_classifier.classify_intent(user_text)
 
     direct = runtime.maybe_rule_reply(user_text, state.profile)
     verifier_issues: list[str] = []
     corrected_by_verifier = False
+
+    # Route explicit automation asks toward workflow planning guidance.
+    if not direct and intent["intent"] == "automation_request":
+        plan, source = automation.build_workflow_plan(
+            goal=user_text,
+            model=_model,
+            tokenizer=_tokenizer,
+            device=_device,
+            max_input_length=DEFAULT_MAX_INPUT_LENGTH,
+            max_new_tokens=DEFAULT_AUTOMATION_MAX_NEW_TOKENS,
+        )
+        first_steps = [s.get("action", "") for s in plan.get("steps", [])[:3]]
+        direct = (
+            "J'ai prepare un plan d'automatisation. "
+            f"Source: {source}. "
+            f"Etapes: {', '.join(first_steps)}. "
+            "Utilise /automation/run pour l'executer (dry_run recommande)."
+        )
+
     if direct:
         answer = direct
     else:
@@ -381,6 +412,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             "user_text": user_text,
             "assistant_text": answer,
             "in_domain": in_domain,
+            "intent": intent,
             "used_rule_reply": bool(direct),
             "is_low_quality": runtime.is_low_quality_answer(answer),
             "verifier_issues": verifier_issues,
@@ -437,3 +469,13 @@ def automation_run(request: AutomationRunRequest) -> AutomationRunResponse:
 
     execution = automation.execute_plan(plan=plan, dry_run=request.dry_run)
     return AutomationRunResponse(plan=plan, source=source, execution=execution)
+
+
+@app.post("/intent/classify", response_model=IntentClassifyResponse)
+def classify_intent(request: IntentClassifyRequest) -> IntentClassifyResponse:
+    result = intent_classifier.classify_intent(request.message.strip())
+    return IntentClassifyResponse(
+        intent=result["intent"],
+        confidence=float(result["confidence"]),
+        reasons=list(result["reasons"]),
+    )
