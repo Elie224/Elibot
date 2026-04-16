@@ -55,6 +55,8 @@ DEFAULT_DAILY_QUOTA_ADVANCED = int(os.getenv("DAILY_QUOTA_ADVANCED", "5000"))
 DEFAULT_DAILY_QUOTA_ADMIN = int(os.getenv("DAILY_QUOTA_ADMIN", "20000"))
 DEFAULT_INTEGRATION_QUEUE_MAX_SIZE = int(os.getenv("INTEGRATION_QUEUE_MAX_SIZE", "1000"))
 DEFAULT_INTEGRATION_MAX_PENDING_PER_PRINCIPAL = int(os.getenv("INTEGRATION_MAX_PENDING_PER_PRINCIPAL", "50"))
+DEFAULT_INTEGRATION_JOB_TTL_SECONDS = int(os.getenv("INTEGRATION_JOB_TTL_SECONDS", "172800"))
+DEFAULT_INTEGRATION_JOBS_PATH = Path(os.getenv("INTEGRATION_JOBS_PATH", "data/automation/integration_jobs.json"))
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
@@ -194,6 +196,67 @@ _role_daily_quota = {
 }
 
 
+def _parse_iso_ts(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _save_integration_jobs_locked() -> None:
+    DEFAULT_INTEGRATION_JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "jobs": _integration_jobs,
+    }
+    DEFAULT_INTEGRATION_JOBS_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _purge_expired_jobs_locked() -> int:
+    now_ts = time.time()
+    ttl = max(60, DEFAULT_INTEGRATION_JOB_TTL_SECONDS)
+    removed = 0
+
+    for job_id, job in list(_integration_jobs.items()):
+        status = str(job.get("status") or "")
+        if status in {"queued", "running"}:
+            continue
+
+        finished_ts = _parse_iso_ts(job.get("finished_at"))
+        if not finished_ts:
+            created_ts = _parse_iso_ts(job.get("created_at"))
+            finished_ts = created_ts
+        if finished_ts and (now_ts - finished_ts) > ttl:
+            _integration_jobs.pop(job_id, None)
+            removed += 1
+
+    return removed
+
+
+def _load_integration_jobs() -> None:
+    if not DEFAULT_INTEGRATION_JOBS_PATH.exists():
+        return
+    try:
+        raw = json.loads(DEFAULT_INTEGRATION_JOBS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    jobs = raw.get("jobs")
+    if not isinstance(jobs, dict):
+        return
+
+    with _integration_jobs_lock:
+        _integration_jobs.update(jobs)
+        _purge_expired_jobs_locked()
+        _save_integration_jobs_locked()
+
+
 def _integration_worker_loop() -> None:
     while True:
         try:
@@ -208,6 +271,7 @@ def _integration_worker_loop() -> None:
                 continue
             job["status"] = "running"
             job["started_at"] = datetime.now(timezone.utc).isoformat()
+            _save_integration_jobs_locked()
 
         try:
             result = external_integrations.execute_integration(
@@ -222,6 +286,8 @@ def _integration_worker_loop() -> None:
                 job["result"] = result
                 job["finished_at"] = datetime.now(timezone.utc).isoformat()
                 _integration_jobs[job_id] = job
+                _purge_expired_jobs_locked()
+                _save_integration_jobs_locked()
         except Exception as exc:
             with _integration_jobs_lock:
                 job = _integration_jobs.get(job_id, {})
@@ -229,10 +295,13 @@ def _integration_worker_loop() -> None:
                 job["error"] = str(exc)
                 job["finished_at"] = datetime.now(timezone.utc).isoformat()
                 _integration_jobs[job_id] = job
+                _purge_expired_jobs_locked()
+                _save_integration_jobs_locked()
         finally:
             _integration_queue.task_done()
 
 
+_load_integration_jobs()
 _integration_worker = Thread(target=_integration_worker_loop, name="elibot-integration-worker", daemon=True)
 _integration_worker.start()
 
@@ -945,6 +1014,7 @@ def integrations_execute_async(request: IntegrationAsyncRequest, _ctx: dict = De
     principal = _ctx.get("principal", "unknown")
 
     with _integration_jobs_lock:
+        _purge_expired_jobs_locked()
         principal_pending = sum(
             1
             for job in _integration_jobs.values()
@@ -971,6 +1041,7 @@ def integrations_execute_async(request: IntegrationAsyncRequest, _ctx: dict = De
             "role": _ctx.get("role"),
             **job_payload,
         }
+        _save_integration_jobs_locked()
 
     try:
         _integration_queue.put_nowait((job_id, job_payload))
@@ -1000,6 +1071,7 @@ def integrations_execute_async(request: IntegrationAsyncRequest, _ctx: dict = De
 @app.get("/integrations/jobs/{job_id}")
 def integration_job_status(job_id: str, _ctx: dict = Depends(require_access("basic"))) -> dict:
     with _integration_jobs_lock:
+        _purge_expired_jobs_locked()
         job = _integration_jobs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
@@ -1011,8 +1083,28 @@ def integration_job_status(job_id: str, _ctx: dict = Depends(require_access("bas
         return dict(job)
 
 
+@app.post("/integrations/jobs/purge")
+def integration_jobs_purge(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    with _integration_jobs_lock:
+        removed = _purge_expired_jobs_locked()
+        _save_integration_jobs_locked()
+        remaining = len(_integration_jobs)
+    return {
+        "status": "ok",
+        "removed": removed,
+        "remaining": remaining,
+    }
+
+
 @app.get("/integrations/metrics")
 def integrations_metrics(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    with _integration_jobs_lock:
+        _purge_expired_jobs_locked()
+        _save_integration_jobs_locked()
+        queued = sum(1 for job in _integration_jobs.values() if job.get("status") == "queued")
+        running = sum(1 for job in _integration_jobs.values() if job.get("status") == "running")
+        finished = sum(1 for job in _integration_jobs.values() if job.get("status") in {"done", "error"})
+
     return {
         "metrics": external_integrations.get_integration_metrics(),
         "provider_health": external_integrations.get_provider_health(),
@@ -1020,11 +1112,26 @@ def integrations_metrics(_ctx: dict = Depends(require_access("admin"))) -> dict:
             "size": _integration_queue.qsize(),
             "max_size": DEFAULT_INTEGRATION_QUEUE_MAX_SIZE,
         },
+        "jobs": {
+            "total": queued + running + finished,
+            "queued": queued,
+            "running": running,
+            "finished": finished,
+            "ttl_seconds": DEFAULT_INTEGRATION_JOB_TTL_SECONDS,
+            "storage_path": str(DEFAULT_INTEGRATION_JOBS_PATH),
+        },
     }
 
 
 @app.get("/dashboard/integrations", response_class=HTMLResponse)
 def integrations_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str:
+    with _integration_jobs_lock:
+        _purge_expired_jobs_locked()
+        _save_integration_jobs_locked()
+        queued_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") == "queued")
+        running_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") == "running")
+        finished_jobs = sum(1 for job in _integration_jobs.values() if job.get("status") in {"done", "error"})
+
     metrics = external_integrations.get_integration_metrics()
     health = external_integrations.get_provider_health()
     by_provider = metrics.get("by_provider", {})
@@ -1066,6 +1173,8 @@ def integrations_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str
           <div><strong>Error:</strong> {metrics.get('error', 0)}</div>
           <div><strong>Updated:</strong> {metrics.get('updated_at', '')}</div>
           <div><strong>Queue:</strong> {_integration_queue.qsize()} / {DEFAULT_INTEGRATION_QUEUE_MAX_SIZE}</div>
+                    <div><strong>Jobs queued/running/finished:</strong> {queued_jobs} / {running_jobs} / {finished_jobs}</div>
+                    <div><strong>Jobs TTL (s):</strong> {DEFAULT_INTEGRATION_JOB_TTL_SECONDS}</div>
         </div>
         <div class="card">
           <h3>By provider</h3>

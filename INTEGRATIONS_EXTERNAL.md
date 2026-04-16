@@ -16,6 +16,7 @@ Elibot exposes a unified integration layer for:
 - `POST /integrations/execute`
 - `POST /integrations/execute-async`
 - `GET /integrations/jobs/{job_id}`
+- `POST /integrations/jobs/purge` (admin)
 - `GET /integrations/templates`
 - `POST /integrations/execute-template`
 - `POST /automation/run-integrations`
@@ -71,8 +72,12 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/integrations/execute -
 - `INTEGRATION_BACKOFF_BASE_MS` (default `300`)
 - `INTEGRATION_CIRCUIT_FAIL_THRESHOLD` (default `3`)
 - `INTEGRATION_CIRCUIT_OPEN_SECONDS` (default `60`)
+- `INTEGRATION_RUNTIME_STATE_PATH` (default `data/logs/integration_runtime_state.json`)
+- `INTEGRATION_ALERT_WEBHOOK_URL` (optional, receives circuit-open alerts)
 - `INTEGRATION_QUEUE_MAX_SIZE` (default `1000`)
 - `INTEGRATION_MAX_PENDING_PER_PRINCIPAL` (default `50`)
+- `INTEGRATION_JOB_TTL_SECONDS` (default `172800`)
+- `INTEGRATION_JOBS_PATH` (default `data/automation/integration_jobs.json`)
 
 ## Actions supported
 
@@ -153,3 +158,14 @@ Invoke-RestMethod -Method Get -Uri ("http://127.0.0.1:8000/integrations/jobs/" +
 
 - Metrics JSON: `GET /integrations/metrics` (admin)
 - HTML dashboard: `GET /dashboard/integrations` (admin)
+
+## Jobs retention and purge
+
+Completed async jobs are persisted and automatically purged after TTL.
+
+Manual purge:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-admin-key" }
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/integrations/jobs/purge -Headers $headers
+```

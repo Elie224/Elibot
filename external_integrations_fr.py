@@ -6,6 +6,7 @@ import os
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -15,6 +16,8 @@ INTEGRATION_MAX_RETRIES = int(os.getenv("INTEGRATION_MAX_RETRIES", "2"))
 INTEGRATION_BACKOFF_BASE_MS = int(os.getenv("INTEGRATION_BACKOFF_BASE_MS", "300"))
 INTEGRATION_CIRCUIT_FAIL_THRESHOLD = int(os.getenv("INTEGRATION_CIRCUIT_FAIL_THRESHOLD", "3"))
 INTEGRATION_CIRCUIT_OPEN_SECONDS = int(os.getenv("INTEGRATION_CIRCUIT_OPEN_SECONDS", "60"))
+INTEGRATION_RUNTIME_STATE_PATH = Path(os.getenv("INTEGRATION_RUNTIME_STATE_PATH", "data/logs/integration_runtime_state.json"))
+INTEGRATION_ALERT_WEBHOOK_URL = os.getenv("INTEGRATION_ALERT_WEBHOOK_URL", "").strip()
 
 _state_lock = Lock()
 _provider_health: dict[str, dict[str, Any]] = {}
@@ -25,6 +28,54 @@ _integration_metrics: dict[str, Any] = {
     "updated_at": "",
     "by_provider": {},
 }
+
+
+def _persist_runtime_state_locked() -> None:
+    INTEGRATION_RUNTIME_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "provider_health": _provider_health,
+        "integration_metrics": _integration_metrics,
+        "saved_at": _now_iso(),
+    }
+    INTEGRATION_RUNTIME_STATE_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_runtime_state() -> None:
+    if not INTEGRATION_RUNTIME_STATE_PATH.exists():
+        return
+    try:
+        raw = json.loads(INTEGRATION_RUNTIME_STATE_PATH.read_text(encoding="utf-8"))
+        ph = raw.get("provider_health")
+        im = raw.get("integration_metrics")
+        if isinstance(ph, dict):
+            _provider_health.update(ph)
+        if isinstance(im, dict):
+            _integration_metrics.update(im)
+            by_provider = im.get("by_provider")
+            if isinstance(by_provider, dict):
+                _integration_metrics["by_provider"] = by_provider
+    except Exception:
+        return
+
+
+def _emit_circuit_alert(provider: str, failures: int, error_message: str, open_until: float) -> None:
+    if not INTEGRATION_ALERT_WEBHOOK_URL:
+        return
+    payload = {
+        "event": "integration_circuit_open",
+        "provider": provider,
+        "consecutive_failures": failures,
+        "error": str(error_message)[:500],
+        "open_until_epoch": open_until,
+        "timestamp": _now_iso(),
+    }
+    try:
+        _http_json("POST", INTEGRATION_ALERT_WEBHOOK_URL, payload=payload)
+    except Exception:
+        return
 
 
 def _now_iso() -> str:
@@ -67,17 +118,27 @@ def _mark_success(provider: str, latency_ms: int) -> None:
         byp["success"] += 1
         byp["last_latency_ms"] = int(latency_ms)
         byp["updated_at"] = _now_iso()
+        _persist_runtime_state_locked()
 
 
 def _mark_error(provider: str, error_message: str) -> None:
+    should_alert = False
+    alert_until = 0.0
+    alert_failures = 0
     with _state_lock:
         _ensure_provider_state(provider)
         failures = int(_provider_health[provider]["consecutive_failures"]) + 1
         _provider_health[provider]["consecutive_failures"] = failures
         _provider_health[provider]["last_error"] = str(error_message)[:400]
         _provider_health[provider]["last_failure_at"] = _now_iso()
+        previous_open_until = float(_provider_health[provider].get("circuit_open_until", 0.0))
         if failures >= INTEGRATION_CIRCUIT_FAIL_THRESHOLD:
-            _provider_health[provider]["circuit_open_until"] = time.time() + max(1, INTEGRATION_CIRCUIT_OPEN_SECONDS)
+            next_open_until = time.time() + max(1, INTEGRATION_CIRCUIT_OPEN_SECONDS)
+            _provider_health[provider]["circuit_open_until"] = next_open_until
+            if previous_open_until <= time.time():
+                should_alert = True
+                alert_until = next_open_until
+                alert_failures = failures
 
         _integration_metrics["total"] += 1
         _integration_metrics["error"] += 1
@@ -87,6 +148,15 @@ def _mark_error(provider: str, error_message: str) -> None:
         byp["total"] += 1
         byp["error"] += 1
         byp["updated_at"] = _now_iso()
+        _persist_runtime_state_locked()
+
+    if should_alert:
+        _emit_circuit_alert(
+            provider=provider,
+            failures=alert_failures,
+            error_message=error_message,
+            open_until=alert_until,
+        )
 
 
 def get_provider_health() -> dict[str, Any]:
@@ -532,3 +602,6 @@ def execute_integration(provider: str, action: str, payload: dict[str, Any], dry
                 time.sleep(backoff_s)
 
     raise RuntimeError(f"integration failed after retries: {last_exc}")
+
+
+_load_runtime_state()

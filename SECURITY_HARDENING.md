@@ -76,5 +76,12 @@ Additional secured endpoints:
 
 - `POST /integrations/execute-async` (advanced)
 - `GET /integrations/jobs/{job_id}` (owner or admin)
+- `POST /integrations/jobs/purge` (admin)
 - `GET /integrations/metrics` (admin)
 - `GET /dashboard/integrations` (admin)
+
+Operational controls:
+
+- async jobs are persisted on disk and retained with TTL
+- manual purge endpoint for expired jobs
+- optional webhook alerts when an integration provider circuit breaker opens
