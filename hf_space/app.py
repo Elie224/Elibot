@@ -18,7 +18,17 @@ SYSTEM_PROMPT = (
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TOKENIZER = AutoTokenizer.from_pretrained(MODEL_ID)
+
+
+def load_tokenizer(model_id):
+    # Some Spaces/transformers versions fail if extra_special_tokens is a list in tokenizer config.
+    try:
+        return AutoTokenizer.from_pretrained(model_id, extra_special_tokens={})
+    except Exception:
+        return AutoTokenizer.from_pretrained(model_id)
+
+
+TOKENIZER = load_tokenizer(MODEL_ID)
 MODEL = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID).to(DEVICE)
 MODEL.eval()
 
@@ -116,7 +126,7 @@ def build_memory_lines(profile):
 def maybe_rule_reply(user_text, profile):
     q = user_text.lower().strip()
 
-    if q in {"bonjour", "salut", "hello", "bonsoir", "coucou"}:
+    if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
         return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
 
     asks_name = ("prenom" in q) or ("prénom" in q) or ("comment je m'appelle" in q) or ("qui suis-je" in q)
