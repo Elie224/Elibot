@@ -555,12 +555,24 @@ CHAT_UI_HTML = """
             align-items: stretch;
         }
         .app {
-            width: min(900px, 100%);
+            width: min(1200px, 100%);
             display: grid;
             grid-template-rows: auto 1fr auto;
             gap: 10px;
             padding: 16px;
             box-sizing: border-box;
+        }
+        .workspace {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 320px;
+            gap: 10px;
+            min-height: 60vh;
+        }
+        .main {
+            display: grid;
+            grid-template-rows: 1fr auto;
+            gap: 10px;
+            min-height: 0;
         }
         .header {
             background: var(--card);
@@ -601,7 +613,7 @@ CHAT_UI_HTML = """
             display: flex;
             flex-direction: column;
             gap: 10px;
-            min-height: 50vh;
+            min-height: 0;
         }
         .msg {
             max-width: 85%;
@@ -654,6 +666,91 @@ CHAT_UI_HTML = """
             opacity: 0.6;
             cursor: not-allowed;
         }
+        .tasks {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 12px;
+            display: grid;
+            grid-template-rows: auto auto auto 1fr;
+            gap: 10px;
+            min-height: 0;
+        }
+        .tasks-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .badge {
+            font-size: 11px;
+            border: 1px solid var(--border);
+            padding: 2px 7px;
+            border-radius: 999px;
+            color: var(--muted);
+            background: #f8fafc;
+        }
+        .tasks-form {
+            display: grid;
+            gap: 6px;
+        }
+        .tasks-form input {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px;
+            font: inherit;
+            font-size: 13px;
+        }
+        .tasks-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        .task-list {
+            overflow: auto;
+            display: grid;
+            gap: 8px;
+            min-height: 0;
+            align-content: start;
+        }
+        .task-item {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px;
+            background: #fcfffd;
+        }
+        .task-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 13px;
+        }
+        .task-meta {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        .task-buttons {
+            margin-top: 8px;
+            display: flex;
+            gap: 6px;
+        }
+        .task-buttons button {
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+        .tiny {
+            background: #1f7a63;
+        }
+        .warning {
+            background: #b45309;
+        }
+        @media (max-width: 960px) {
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -665,11 +762,30 @@ CHAT_UI_HTML = """
                 <div class="session" id="session">Session: -</div>
             </div>
         </div>
-        <div class="chat" id="chat"></div>
-        <div class="composer">
-            <textarea id="input" placeholder="Ecris ton message..."></textarea>
-            <button id="send">Envoyer</button>
-            <button class="secondary" id="reset">Reset</button>
+        <div class="workspace">
+            <div class="main">
+                <div class="chat" id="chat"></div>
+                <div class="composer">
+                    <textarea id="input" placeholder="Ecris ton message..."></textarea>
+                    <button id="send">Envoyer</button>
+                    <button class="secondary" id="reset">Reset</button>
+                </div>
+            </div>
+            <aside class="tasks">
+                <div class="tasks-title">
+                    <span>Taches</span>
+                    <span class="badge">PREVIEW</span>
+                </div>
+                <div class="tasks-form">
+                    <input id="taskTitle" placeholder="Nouvelle tache" />
+                    <input id="taskSteps" placeholder="Etapes separees par virgules" />
+                </div>
+                <div class="tasks-actions">
+                    <button id="taskAdd">Ajouter</button>
+                    <button class="secondary" id="taskRefresh">Rafraichir</button>
+                </div>
+                <div class="task-list" id="taskList"></div>
+            </aside>
         </div>
     </div>
     <script>
@@ -680,6 +796,11 @@ CHAT_UI_HTML = """
         const resetBtn = document.getElementById('reset');
         const sessionEl = document.getElementById('session');
         const apiKeyInput = document.getElementById('apiKey');
+        const taskTitleInput = document.getElementById('taskTitle');
+        const taskStepsInput = document.getElementById('taskSteps');
+        const taskAddBtn = document.getElementById('taskAdd');
+        const taskRefreshBtn = document.getElementById('taskRefresh');
+        const taskListEl = document.getElementById('taskList');
 
         function authHeaders() {
             const headers = { 'Content-Type': 'application/json' };
@@ -694,6 +815,138 @@ CHAT_UI_HTML = """
             el.textContent = text;
             chat.appendChild(el);
             chat.scrollTop = chat.scrollHeight;
+        }
+
+        function renderTasks(tasks) {
+            taskListEl.innerHTML = '';
+            if (!Array.isArray(tasks) || tasks.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'task-meta';
+                empty.textContent = 'Aucune tache pour cette session.';
+                taskListEl.appendChild(empty);
+                return;
+            }
+
+            tasks.forEach((task) => {
+                const item = document.createElement('div');
+                item.className = 'task-item';
+                const status = task.status || 'active';
+                const remaining = Number(task.remaining_steps || 0);
+
+                const head = document.createElement('div');
+                head.className = 'task-head';
+                head.innerHTML = `<strong>${task.title || 'Tache'}</strong><span>${status}</span>`;
+
+                const meta = document.createElement('div');
+                meta.className = 'task-meta';
+                meta.textContent = `Restant: ${remaining} | Fait: ${(task.done_steps || []).length}`;
+
+                const btns = document.createElement('div');
+                btns.className = 'task-buttons';
+
+                const doneBtn = document.createElement('button');
+                doneBtn.className = 'tiny';
+                doneBtn.textContent = 'Marquer termine';
+                doneBtn.addEventListener('click', async () => {
+                    if (!sessionId) return;
+                    try {
+                        const body = {
+                            session_id: sessionId,
+                            task_id: task.task_id,
+                            mark_done: true,
+                        };
+                        const res = await fetch('/tasks/progress', {
+                            method: 'POST',
+                            headers: authHeaders(),
+                            body: JSON.stringify(body),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Erreur mise a jour tache');
+                        await refreshTasks();
+                    } catch (e) {
+                        addMessage(`Erreur tache: ${e.message}`, 'bot');
+                    }
+                });
+
+                const blockBtn = document.createElement('button');
+                blockBtn.className = 'warning';
+                blockBtn.textContent = 'Signaler erreur';
+                blockBtn.addEventListener('click', async () => {
+                    if (!sessionId) return;
+                    try {
+                        const body = {
+                            session_id: sessionId,
+                            task_id: task.task_id,
+                            error: 'Erreur signalee depuis interface',
+                        };
+                        const res = await fetch('/tasks/progress', {
+                            method: 'POST',
+                            headers: authHeaders(),
+                            body: JSON.stringify(body),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'Erreur mise a jour tache');
+                        await refreshTasks();
+                    } catch (e) {
+                        addMessage(`Erreur tache: ${e.message}`, 'bot');
+                    }
+                });
+
+                btns.appendChild(doneBtn);
+                btns.appendChild(blockBtn);
+
+                item.appendChild(head);
+                item.appendChild(meta);
+                item.appendChild(btns);
+                taskListEl.appendChild(item);
+            });
+        }
+
+        async function refreshTasks() {
+            if (!sessionId) {
+                renderTasks([]);
+                return;
+            }
+            try {
+                const res = await fetch(`/tasks/${sessionId}?include_done=true`, {
+                    method: 'GET',
+                    headers: authHeaders(),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Erreur recuperation taches');
+                renderTasks(data.tasks || []);
+            } catch (e) {
+                addMessage(`Erreur taches: ${e.message}`, 'bot');
+            }
+        }
+
+        async function addTask() {
+            if (!sessionId) {
+                addMessage('Envoie d abord un message pour initialiser la session.', 'bot');
+                return;
+            }
+            const title = (taskTitleInput.value || '').trim();
+            if (!title) return;
+
+            const steps = (taskStepsInput.value || '')
+                .split(',')
+                .map((x) => x.trim())
+                .filter(Boolean);
+
+            try {
+                const res = await fetch('/tasks/upsert', {
+                    method: 'POST',
+                    headers: authHeaders(),
+                    body: JSON.stringify({ session_id: sessionId, title, steps }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Erreur creation tache');
+                taskTitleInput.value = '';
+                taskStepsInput.value = '';
+                await refreshTasks();
+            } catch (e) {
+                addMessage(`Erreur tache: ${e.message}`, 'bot');
+            }
         }
 
         async function sendMessage() {
@@ -714,6 +967,7 @@ CHAT_UI_HTML = """
                 sessionId = data.session_id;
                 sessionEl.textContent = `Session: ${sessionId}`;
                 addMessage(data.response, 'bot');
+                await refreshTasks();
             } catch (e) {
                 addMessage(`Erreur: ${e.message}`, 'bot');
             } finally {
@@ -732,18 +986,28 @@ CHAT_UI_HTML = """
             sessionEl.textContent = 'Session: -';
             chat.innerHTML = '';
             addMessage('Session reinitialisee.', 'bot');
+            renderTasks([]);
         }
 
         sendBtn.addEventListener('click', sendMessage);
         resetBtn.addEventListener('click', resetSession);
+        taskAddBtn.addEventListener('click', addTask);
+        taskRefreshBtn.addEventListener('click', refreshTasks);
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
             }
         });
+        taskTitleInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addTask();
+            }
+        });
 
         addMessage("Bonjour, je suis Elibot. Je suis specialise data, IA et automatisation. Pose-moi une question technique.", 'bot');
+        renderTasks([]);
         input.focus();
     </script>
 </body>
