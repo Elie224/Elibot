@@ -60,6 +60,9 @@ DEFAULT_INTEGRATION_QUEUE_MAX_SIZE = int(os.getenv("INTEGRATION_QUEUE_MAX_SIZE",
 DEFAULT_INTEGRATION_MAX_PENDING_PER_PRINCIPAL = int(os.getenv("INTEGRATION_MAX_PENDING_PER_PRINCIPAL", "50"))
 DEFAULT_INTEGRATION_JOB_TTL_SECONDS = int(os.getenv("INTEGRATION_JOB_TTL_SECONDS", "172800"))
 DEFAULT_INTEGRATION_JOBS_PATH = Path(os.getenv("INTEGRATION_JOBS_PATH", "data/automation/integration_jobs.json"))
+DEFAULT_NEXTGEN_AUTOPILOT_ENABLED = os.getenv("NEXTGEN_AUTOPILOT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_NEXTGEN_AUTOPILOT_DRY_RUN = os.getenv("NEXTGEN_AUTOPILOT_DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_NEXTGEN_AUTOPILOT_MAX_ACTIONS = int(os.getenv("NEXTGEN_AUTOPILOT_MAX_ACTIONS", "3"))
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
@@ -182,6 +185,13 @@ class TaskProgressRequest(BaseModel):
 class SandboxActionRequest(BaseModel):
     action: str = Field(..., min_length=2)
     payload: dict = Field(default_factory=dict)
+
+
+class NextgenAutopilotRunRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    session_id: str | None = None
+    dry_run: bool | None = None
+    max_actions: int = Field(default=3, ge=1, le=10)
 
 
 @dataclass
@@ -394,6 +404,128 @@ def _append_chat_event(event: dict) -> None:
     with _log_lock:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _integration_items_from_text(user_text: str) -> list[dict]:
+    q = (user_text or "").lower()
+    items: list[dict] = []
+    if "github" in q:
+        items.append({"provider": "github", "action": "create_issue", "payload": {"title": "Elibot autopilot draft", "body": user_text[:240]}})
+    if "slack" in q:
+        items.append({"provider": "slack", "action": "send_message", "payload": {"text": f"Autopilot draft: {user_text[:180]}"}})
+    if "discord" in q:
+        items.append({"provider": "discord", "action": "send_message", "payload": {"text": f"Autopilot draft: {user_text[:180]}"}})
+    if "jira" in q:
+        items.append({"provider": "jira", "action": "create_issue", "payload": {"summary": "Autopilot incident draft", "description": user_text[:400]}})
+    if "trello" in q:
+        items.append({"provider": "trello", "action": "create_card", "payload": {"name": "Autopilot task", "desc": user_text[:300]}})
+    if "notion" in q:
+        items.append({"provider": "notion", "action": "create_page", "payload": {"title": "Autopilot note", "content": user_text[:600]}})
+    if "drive" in q:
+        items.append({"provider": "google_drive", "action": "create_text_file", "payload": {"name": "autopilot_note.txt", "content": user_text[:800]}})
+    return items
+
+
+def _run_nextgen_autopilot(
+    *,
+    sid: str,
+    user_text: str,
+    intent: dict,
+    tool_decision: dict,
+    internal_scores: dict,
+    in_domain: bool,
+    dry_run: bool,
+    max_actions: int,
+) -> dict:
+    can_run, reason = nextgen.should_autopilot(
+        intent=intent,
+        tool_selection=tool_decision,
+        internal_scores=internal_scores,
+        in_domain=in_domain,
+    )
+    if not can_run:
+        return {
+            "enabled": True,
+            "ran": False,
+            "reason": reason,
+            "dry_run": dry_run,
+            "max_actions": max_actions,
+            "executed_actions": 0,
+            "actions": [],
+        }
+
+    budget = max(1, max_actions)
+    actions: list[dict] = []
+
+    selected = tool_decision.get("selected", [])
+    if "automation_plan" in selected and budget > 0:
+        plan, source = automation.build_workflow_plan(
+            goal=user_text,
+            model=_model,
+            tokenizer=_tokenizer,
+            device=_device,
+            max_input_length=DEFAULT_MAX_INPUT_LENGTH,
+            max_new_tokens=DEFAULT_AUTOMATION_MAX_NEW_TOKENS,
+        )
+        execution = automation.execute_plan(plan=plan, dry_run=dry_run)
+        actions.append(
+            {
+                "type": "automation",
+                "source": source,
+                "plan": plan,
+                "execution": execution,
+            }
+        )
+        budget -= 1
+
+    if "integrations" in selected and budget > 0:
+        for item in _integration_items_from_text(user_text)[:budget]:
+            try:
+                result = external_integrations.execute_integration(
+                    provider=item["provider"],
+                    action=item["action"],
+                    payload=item["payload"],
+                    dry_run=dry_run,
+                )
+                actions.append(
+                    {
+                        "type": "integration",
+                        "provider": item["provider"],
+                        "action": item["action"],
+                        "result": result,
+                    }
+                )
+            except Exception as exc:
+                actions.append(
+                    {
+                        "type": "integration",
+                        "provider": item["provider"],
+                        "action": item["action"],
+                        "error": str(exc),
+                    }
+                )
+
+    advanced.write_audit(
+        {
+            "event": "nextgen_autopilot_run",
+            "session_id": sid,
+            "reason": reason,
+            "dry_run": dry_run,
+            "max_actions": max_actions,
+            "executed_actions": len(actions),
+            "tools": tool_decision.get("selected", []),
+        }
+    )
+
+    return {
+        "enabled": True,
+        "ran": True,
+        "reason": reason,
+        "dry_run": dry_run,
+        "max_actions": max_actions,
+        "executed_actions": len(actions),
+        "actions": actions,
+    }
 
 CHAT_UI_HTML = """
 <!doctype html>
@@ -765,6 +897,33 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
         tools_selected=tool_decision.get("selected", []),
     )
 
+    autopilot = {
+        "enabled": DEFAULT_NEXTGEN_AUTOPILOT_ENABLED,
+        "ran": False,
+        "reason": "disabled",
+        "dry_run": DEFAULT_NEXTGEN_AUTOPILOT_DRY_RUN,
+        "max_actions": DEFAULT_NEXTGEN_AUTOPILOT_MAX_ACTIONS,
+        "executed_actions": 0,
+        "actions": [],
+    }
+    if DEFAULT_NEXTGEN_AUTOPILOT_ENABLED:
+        autopilot = _run_nextgen_autopilot(
+            sid=sid,
+            user_text=user_text,
+            intent=intent,
+            tool_decision=tool_decision,
+            internal_scores=internal_scores,
+            in_domain=in_domain,
+            dry_run=DEFAULT_NEXTGEN_AUTOPILOT_DRY_RUN,
+            max_actions=DEFAULT_NEXTGEN_AUTOPILOT_MAX_ACTIONS,
+        )
+        state_trace = nextgen.apply_execution_outcome_to_trace(
+            state_trace,
+            executed=bool(autopilot.get("ran") and autopilot.get("executed_actions", 0) > 0),
+        )
+        if autopilot.get("ran") and autopilot.get("executed_actions", 0) > 0:
+            answer += f"\n\n[autopilot] {autopilot.get('executed_actions', 0)} action(s) preparee(s) (dry_run={autopilot.get('dry_run')})."
+
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
     state.user_turn_count += 1
@@ -802,6 +961,7 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
             "compliance": compliance,
             "guardrails": guarded,
             "internal_scores": internal_scores,
+            "autopilot": autopilot,
             "summary": state.summary,
             "profile": dict(state.profile),
         }
@@ -833,6 +993,7 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
             "tool_decision": tool_decision,
             "state_trace": state_trace,
             "internal_scores": internal_scores,
+            "autopilot": autopilot,
         }
     )
 
@@ -845,6 +1006,7 @@ def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) ->
             "state_trace": state_trace,
             "internal_scores": internal_scores,
             "guardrails": guarded,
+            "autopilot": autopilot,
         }
     )
 
@@ -899,6 +1061,50 @@ def nextgen_decision(message: str, session_id: str | None = None, _ctx: dict = D
         "tool_decision": tool_decision,
         "state_trace": trace,
         "context_injection": injected,
+    }
+
+
+@app.get("/nextgen/autopilot/config")
+def nextgen_autopilot_config(_ctx: dict = Depends(require_access("admin"))) -> dict:
+    return {
+        "enabled": DEFAULT_NEXTGEN_AUTOPILOT_ENABLED,
+        "dry_run": DEFAULT_NEXTGEN_AUTOPILOT_DRY_RUN,
+        "max_actions": DEFAULT_NEXTGEN_AUTOPILOT_MAX_ACTIONS,
+    }
+
+
+@app.post("/nextgen/autopilot/run")
+def nextgen_autopilot_run(request: NextgenAutopilotRunRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    sid, state = _get_or_create_session(request.session_id)
+    user_text = request.message.strip()
+    intent = intent_classifier.classify_intent(user_text)
+    in_domain = runtime.is_in_domain_query(user_text)
+    tools = nextgen.select_tools(user_text, intent, state.profile, bool(task_memory.list_tasks(sid, include_done=False)))
+
+    # Dry score seed for autopilot eligibility before generation.
+    provisional_scores = {
+        "confidence": 0.72,
+        "coherence": 0.72,
+        "quality": 0.72,
+        "risk": 0.28,
+        "uncertainty": 0.2,
+    }
+
+    result = _run_nextgen_autopilot(
+        sid=sid,
+        user_text=user_text,
+        intent=intent,
+        tool_decision=tools,
+        internal_scores=provisional_scores,
+        in_domain=in_domain,
+        dry_run=DEFAULT_NEXTGEN_AUTOPILOT_DRY_RUN if request.dry_run is None else bool(request.dry_run),
+        max_actions=max(1, request.max_actions),
+    )
+    return {
+        "session_id": sid,
+        "intent": intent,
+        "tool_decision": tools,
+        "autopilot": result,
     }
 
 

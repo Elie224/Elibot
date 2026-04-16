@@ -83,6 +83,45 @@ def build_state_machine_trace(tool_selection: dict[str, Any]) -> list[dict[str, 
     return states
 
 
+def should_autopilot(
+    intent: dict[str, Any],
+    tool_selection: dict[str, Any],
+    internal_scores: dict[str, float],
+    in_domain: bool,
+) -> tuple[bool, str]:
+    if not in_domain:
+        return False, "out_of_domain"
+
+    selected = tool_selection.get("selected", [])
+    if not any(x in selected for x in ["automation_plan", "integrations"]):
+        return False, "no_executable_tool"
+
+    risk = float(internal_scores.get("risk", 1.0))
+    quality = float(internal_scores.get("quality", 0.0))
+    confidence = float(internal_scores.get("confidence", 0.0))
+
+    if risk > 0.55:
+        return False, "risk_too_high"
+    if quality < 0.45:
+        return False, "quality_too_low"
+    if confidence < 0.45:
+        return False, "confidence_too_low"
+
+    if intent.get("intent") in {"automation_request", "code_request", "technical_question"}:
+        return True, "eligible_intent"
+    return False, "intent_not_eligible"
+
+
+def apply_execution_outcome_to_trace(trace: list[dict[str, Any]], executed: bool) -> list[dict[str, Any]]:
+    out = []
+    for node in trace:
+        item = dict(node)
+        if item.get("state") == "execution":
+            item["status"] = "done" if executed else item.get("status", "planned")
+        out.append(item)
+    return out
+
+
 def _trim(value: str, max_chars: int) -> str:
     v = " ".join((value or "").split())
     if len(v) <= max_chars:

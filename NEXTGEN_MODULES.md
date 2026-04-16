@@ -23,12 +23,40 @@ This layer adds 10 advanced modules on top of existing Elibot capabilities.
 ## API endpoints
 
 - `GET /nextgen/decision`
+- `GET /nextgen/autopilot/config`
+- `POST /nextgen/autopilot/run`
 - `POST /sandbox/simulate-action`
 - `POST /tasks/upsert`
 - `POST /tasks/progress`
 - `GET /tasks/{session_id}`
 - `GET /nextgen/distillation-plan`
 - `GET /metrics/internal-scores`
+
+## State-machine autopilot
+
+Elibot now supports controlled auto-execution from the state machine.
+
+Environment variables:
+
+- `NEXTGEN_AUTOPILOT_ENABLED` (default `false`)
+- `NEXTGEN_AUTOPILOT_DRY_RUN` (default `true`)
+- `NEXTGEN_AUTOPILOT_MAX_ACTIONS` (default `3`)
+
+Behavior:
+
+- checks eligibility with intent + risk/quality/confidence
+- applies strict action budget
+- executes automation/integration actions with guardrails
+- updates execution state in state trace
+- writes audit trail
+
+Quick run:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-advanced-key"; "Content-Type" = "application/json" }
+$body = '{"message":"Automatiser un workflow API GitHub et Slack","max_actions":2,"dry_run":true}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/nextgen/autopilot/run -Headers $headers -Body $body
+```
 
 ## Integration in /chat
 
