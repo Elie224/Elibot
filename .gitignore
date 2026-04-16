@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+.venv_gpu/
+
+# Local runtime artifacts
+reports/
+data/memory/
+
+# Model artifacts (publish to Hugging Face separately)
+models/
+
+# Oversized dataset artifacts (keep out of Git history)
+dialogs_expanded.csv
+data/processed/chatbot_pairs_en.csv
+data/processed/chatbot_pairs_fr.csv
+data/processed/chatbot_train_fr.csv
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/

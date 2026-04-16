@@ -1,0 +1,18 @@
+{
+  "total_pairs_en": 313603,
+  "cornell_pairs_en": 215262,
+  "additional_csv_pairs_en": 452099,
+  "additional_csv_source_counts": {
+    "qa_csv:dialogs_expanded.csv": 139409,
+    "input_target_csv:input3.csv+target3.csv": 217354,
+    "qa_csv:synthetic_realistic_qa_fr.csv": 88657,
+    "dialog_csv:test.csv": 6679
+  },
+  "translated_rows": 313603,
+  "outputs": {
+    "en": "C:\\Users\\KOURO\\Desktop\\chatbot\\data\\processed\\chatbot_pairs_en.csv",
+    "fr": "C:\\Users\\KOURO\\Desktop\\chatbot\\data\\processed\\chatbot_pairs_fr.csv",
+    "train": "C:\\Users\\KOURO\\Desktop\\chatbot\\data\\processed\\chatbot_train_fr.csv",
+    "cache": "C:\\Users\\KOURO\\Desktop\\chatbot\\data\\processed\\translation_cache_en_fr.json"
+  }
+}
