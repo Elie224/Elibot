@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
+import automation_engine_fr as automation
 import chat_with_model_fr as runtime
 
 
@@ -19,6 +20,7 @@ DEFAULT_MODEL_DIR = os.getenv("MODEL_DIR", "models/chatbot-fr-flan-t5-small-v2-c
 DEFAULT_HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "4"))
 DEFAULT_MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "512"))
 DEFAULT_MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "72"))
+DEFAULT_AUTOMATION_MAX_NEW_TOKENS = int(os.getenv("AUTOMATION_MAX_NEW_TOKENS", "220"))
 DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 DEFAULT_TOP_P = float(os.getenv("TOP_P", "0.9"))
 DEFAULT_REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.1"))
@@ -42,6 +44,27 @@ class ChatResponse(BaseModel):
     session_id: str
     response: str
     profile: dict[str, str]
+
+
+class AutomationPlanRequest(BaseModel):
+    goal: str = Field(..., min_length=4)
+
+
+class AutomationPlanResponse(BaseModel):
+    plan: dict
+    source: str
+
+
+class AutomationRunRequest(BaseModel):
+    goal: str | None = None
+    plan: dict | None = None
+    dry_run: bool = True
+
+
+class AutomationRunResponse(BaseModel):
+    plan: dict
+    source: str
+    execution: dict
 
 
 @dataclass
@@ -364,3 +387,42 @@ def reset_session(session_id: str) -> dict[str, str]:
         if session_id in _sessions:
             del _sessions[session_id]
     return {"status": "reset", "session_id": session_id}
+
+
+@app.post("/automation/plan", response_model=AutomationPlanResponse)
+def automation_plan(request: AutomationPlanRequest) -> AutomationPlanResponse:
+    goal = request.goal.strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="goal cannot be empty")
+
+    plan, source = automation.build_workflow_plan(
+        goal=goal,
+        model=_model,
+        tokenizer=_tokenizer,
+        device=_device,
+        max_input_length=DEFAULT_MAX_INPUT_LENGTH,
+        max_new_tokens=DEFAULT_AUTOMATION_MAX_NEW_TOKENS,
+    )
+    return AutomationPlanResponse(plan=plan, source=source)
+
+
+@app.post("/automation/run", response_model=AutomationRunResponse)
+def automation_run(request: AutomationRunRequest) -> AutomationRunResponse:
+    source = "request"
+    if request.plan is not None:
+        plan = automation.sanitize_plan(request.plan)
+    else:
+        goal = (request.goal or "").strip()
+        if not goal:
+            raise HTTPException(status_code=400, detail="provide plan or goal")
+        plan, source = automation.build_workflow_plan(
+            goal=goal,
+            model=_model,
+            tokenizer=_tokenizer,
+            device=_device,
+            max_input_length=DEFAULT_MAX_INPUT_LENGTH,
+            max_new_tokens=DEFAULT_AUTOMATION_MAX_NEW_TOKENS,
+        )
+
+    execution = automation.execute_plan(plan=plan, dry_run=request.dry_run)
+    return AutomationRunResponse(plan=plan, source=source, execution=execution)
