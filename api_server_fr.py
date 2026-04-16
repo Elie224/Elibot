@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -7,8 +8,8 @@ from pathlib import Path
 from threading import Lock
 
 import torch
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -35,6 +36,19 @@ DEFAULT_NO_REPEAT_NGRAM = int(os.getenv("NO_REPEAT_NGRAM", "3"))
 DEFAULT_HISTORY_MODE = os.getenv("HISTORY_MODE", "user-only")
 DEFAULT_KNOWLEDGE_TOP_K = int(os.getenv("KNOWLEDGE_TOP_K", "3"))
 DEFAULT_CHAT_LOG_PATH = os.getenv("CHAT_LOG_PATH", "data/logs/elibot_chat_events.jsonl")
+DEFAULT_REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_API_KEYS = os.getenv(
+    "API_KEYS",
+    "elibot-admin-key:admin,elibot-advanced-key:advanced,elibot-basic-key:basic",
+)
+
+DEFAULT_RATE_LIMIT_BASIC = int(os.getenv("RATE_LIMIT_BASIC_PER_MIN", "30"))
+DEFAULT_RATE_LIMIT_ADVANCED = int(os.getenv("RATE_LIMIT_ADVANCED_PER_MIN", "120"))
+DEFAULT_RATE_LIMIT_ADMIN = int(os.getenv("RATE_LIMIT_ADMIN_PER_MIN", "300"))
+
+DEFAULT_DAILY_QUOTA_BASIC = int(os.getenv("DAILY_QUOTA_BASIC", "800"))
+DEFAULT_DAILY_QUOTA_ADVANCED = int(os.getenv("DAILY_QUOTA_ADVANCED", "5000"))
+DEFAULT_DAILY_QUOTA_ADMIN = int(os.getenv("DAILY_QUOTA_ADMIN", "20000"))
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
@@ -111,6 +125,99 @@ app = FastAPI(title="Elibot API", version="1.0.0")
 _state_lock = Lock()
 _sessions: dict[str, SessionState] = {}
 _log_lock = Lock()
+_access_lock = Lock()
+
+_rate_state: dict[str, dict] = {}
+_quota_state: dict[str, dict] = {}
+
+_role_rank = {"basic": 0, "advanced": 1, "admin": 2}
+_role_rate_limit = {
+    "basic": DEFAULT_RATE_LIMIT_BASIC,
+    "advanced": DEFAULT_RATE_LIMIT_ADVANCED,
+    "admin": DEFAULT_RATE_LIMIT_ADMIN,
+}
+_role_daily_quota = {
+    "basic": DEFAULT_DAILY_QUOTA_BASIC,
+    "advanced": DEFAULT_DAILY_QUOTA_ADVANCED,
+    "admin": DEFAULT_DAILY_QUOTA_ADMIN,
+}
+
+
+def _parse_api_keys(raw: str) -> dict[str, str]:
+    # Format: "key1:admin,key2:advanced,key3:basic"
+    mapping: dict[str, str] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk or ":" not in chunk:
+            continue
+        key, role = chunk.split(":", 1)
+        key = key.strip()
+        role = role.strip().lower()
+        if key and role in _role_rank:
+            mapping[key] = role
+    return mapping
+
+
+_api_key_role_map = _parse_api_keys(DEFAULT_API_KEYS)
+
+
+def _enforce_rate_and_quota(principal: str, role: str) -> None:
+    minute_bucket = int(time.time() // 60)
+    day_bucket = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    per_min_limit = _role_rate_limit.get(role, DEFAULT_RATE_LIMIT_BASIC)
+    per_day_quota = _role_daily_quota.get(role, DEFAULT_DAILY_QUOTA_BASIC)
+
+    with _access_lock:
+        rs = _rate_state.get(principal)
+        if rs is None or rs.get("minute") != minute_bucket:
+            rs = {"minute": minute_bucket, "count": 0}
+            _rate_state[principal] = rs
+        if rs["count"] >= per_min_limit:
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
+        rs["count"] += 1
+
+        qs = _quota_state.get(principal)
+        if qs is None or qs.get("day") != day_bucket:
+            qs = {"day": day_bucket, "count": 0}
+            _quota_state[principal] = qs
+        if qs["count"] >= per_day_quota:
+            raise HTTPException(status_code=429, detail="daily quota exceeded")
+        qs["count"] += 1
+
+
+def _authorize(required_role: str, api_key: str | None, request: Request) -> dict:
+    client_host = request.client.host if request.client else "unknown"
+
+    if not DEFAULT_REQUIRE_API_KEY:
+        principal = api_key or f"anonymous:{client_host}"
+        role = _api_key_role_map.get(api_key or "", "basic")
+        _enforce_rate_and_quota(principal, role)
+        return {"principal": principal, "role": role}
+
+    if not api_key:
+        raise HTTPException(status_code=401, detail="missing X-API-Key header")
+
+    role = _api_key_role_map.get(api_key)
+    if role is None:
+        raise HTTPException(status_code=401, detail="invalid API key")
+
+    if _role_rank[role] < _role_rank[required_role]:
+        raise HTTPException(status_code=403, detail="insufficient role")
+
+    principal = f"api:{api_key[:6]}"
+    _enforce_rate_and_quota(principal, role)
+    return {"principal": principal, "role": role}
+
+
+def require_access(required_role: str):
+    def _dep(
+        request: Request,
+        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    ) -> dict:
+        return _authorize(required_role, x_api_key, request)
+
+    return _dep
 
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 _tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL_DIR)
@@ -178,6 +285,18 @@ CHAT_UI_HTML = """
         .session {
             color: var(--muted);
             font-size: 13px;
+        }
+        .auth {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .auth input {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            width: 180px;
         }
         .chat {
             background: var(--card);
@@ -247,7 +366,10 @@ CHAT_UI_HTML = """
     <div class="app">
         <div class="header">
             <div class="title">Elibot</div>
-            <div class="session" id="session">Session: -</div>
+            <div class="auth">
+                <input id="apiKey" placeholder="X-API-Key" />
+                <div class="session" id="session">Session: -</div>
+            </div>
         </div>
         <div class="chat" id="chat"></div>
         <div class="composer">
@@ -263,6 +385,14 @@ CHAT_UI_HTML = """
         const sendBtn = document.getElementById('send');
         const resetBtn = document.getElementById('reset');
         const sessionEl = document.getElementById('session');
+        const apiKeyInput = document.getElementById('apiKey');
+
+        function authHeaders() {
+            const headers = { 'Content-Type': 'application/json' };
+            const key = (apiKeyInput.value || '').trim();
+            if (key) headers['X-API-Key'] = key;
+            return headers;
+        }
 
         function addMessage(text, cls) {
             const el = document.createElement('div');
@@ -282,7 +412,7 @@ CHAT_UI_HTML = """
             try {
                 const res = await fetch('/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders(),
                     body: JSON.stringify({ message, session_id: sessionId }),
                 });
                 const data = await res.json();
@@ -303,7 +433,7 @@ CHAT_UI_HTML = """
                 chat.innerHTML = '';
                 return;
             }
-            await fetch(`/reset/${sessionId}`, { method: 'POST' });
+            await fetch(`/reset/${sessionId}`, { method: 'POST', headers: authHeaders() });
             sessionId = null;
             sessionEl.textContent = 'Session: -';
             chat.innerHTML = '';
@@ -346,7 +476,7 @@ def health() -> dict[str, str]:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, _ctx: dict = Depends(require_access("basic"))) -> ChatResponse:
     sid, state = _get_or_create_session(request.session_id)
     user_text = request.message.strip()
     if not user_text:
@@ -503,7 +633,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 
 @app.post("/reset/{session_id}")
-def reset_session(session_id: str) -> dict[str, str]:
+def reset_session(session_id: str, _ctx: dict = Depends(require_access("basic"))) -> dict[str, str]:
     with _state_lock:
         if session_id in _sessions:
             del _sessions[session_id]
@@ -511,7 +641,7 @@ def reset_session(session_id: str) -> dict[str, str]:
 
 
 @app.get("/session/{session_id}/summary")
-def session_summary(session_id: str) -> dict:
+def session_summary(session_id: str, _ctx: dict = Depends(require_access("basic"))) -> dict:
     with _state_lock:
         state = _sessions.get(session_id)
         if state is None:
@@ -525,7 +655,7 @@ def session_summary(session_id: str) -> dict:
 
 
 @app.post("/automation/plan", response_model=AutomationPlanResponse)
-def automation_plan(request: AutomationPlanRequest) -> AutomationPlanResponse:
+def automation_plan(request: AutomationPlanRequest, _ctx: dict = Depends(require_access("advanced"))) -> AutomationPlanResponse:
     goal = request.goal.strip()
     if not goal:
         raise HTTPException(status_code=400, detail="goal cannot be empty")
@@ -542,7 +672,7 @@ def automation_plan(request: AutomationPlanRequest) -> AutomationPlanResponse:
 
 
 @app.post("/automation/run", response_model=AutomationRunResponse)
-def automation_run(request: AutomationRunRequest) -> AutomationRunResponse:
+def automation_run(request: AutomationRunRequest, _ctx: dict = Depends(require_access("advanced"))) -> AutomationRunResponse:
     source = "request"
     if request.plan is not None:
         plan = automation.sanitize_plan(request.plan)
@@ -564,7 +694,7 @@ def automation_run(request: AutomationRunRequest) -> AutomationRunResponse:
 
 
 @app.post("/intent/classify", response_model=IntentClassifyResponse)
-def classify_intent(request: IntentClassifyRequest) -> IntentClassifyResponse:
+def classify_intent(request: IntentClassifyRequest, _ctx: dict = Depends(require_access("basic"))) -> IntentClassifyResponse:
     result = intent_classifier.classify_intent(request.message.strip())
     return IntentClassifyResponse(
         intent=result["intent"],
@@ -574,34 +704,94 @@ def classify_intent(request: IntentClassifyRequest) -> IntentClassifyResponse:
 
 
 @app.post("/rewrite")
-def rewrite_text(request: RewriteRequest) -> dict:
+def rewrite_text(request: RewriteRequest, _ctx: dict = Depends(require_access("basic"))) -> dict:
     rewritten = advanced.rewrite_text(request.text, request.mode)
     return {"mode": request.mode, "original": request.text, "rewritten": rewritten}
 
 
 @app.post("/simulate")
-def simulate_plan(request: SimulateRequest) -> dict:
+def simulate_plan(request: SimulateRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
     return advanced.simulate_workflow(request.plan)
 
 
 @app.post("/tools/suggest")
-def suggest_tools(request: ToolSuggestRequest) -> dict:
+def suggest_tools(request: ToolSuggestRequest, _ctx: dict = Depends(require_access("basic"))) -> dict:
     tools = advanced.tool_suggestions(request.message)
     return {"message": request.message, "tools": tools}
 
 
 @app.get("/audit/recent")
-def recent_audit(limit: int = 20) -> dict:
+def recent_audit(limit: int = 20, _ctx: dict = Depends(require_access("admin"))) -> dict:
     items = advanced.read_recent_audit(limit=max(1, min(limit, 200)))
     return {"count": len(items), "items": items}
 
 
 @app.get("/metrics/performance")
-def performance_metrics() -> dict:
+def performance_metrics(_ctx: dict = Depends(require_access("admin"))) -> dict:
     return advanced.get_performance_metrics()
 
 
+@app.get("/metrics/performance.csv", response_class=PlainTextResponse)
+def performance_metrics_csv(_ctx: dict = Depends(require_access("admin"))) -> str:
+        metrics = advanced.get_performance_metrics()
+        by_intent = metrics.get("by_intent", {})
+
+        lines = ["metric,value"]
+        lines.append(f"total,{metrics.get('total', 0)}")
+        lines.append(f"corrected_by_verifier,{metrics.get('corrected_by_verifier', 0)}")
+        lines.append(f"rule_reply,{metrics.get('rule_reply', 0)}")
+        lines.append(f"out_of_domain,{metrics.get('out_of_domain', 0)}")
+        lines.append(f"updated_at,{metrics.get('updated_at', '')}")
+        for intent_name, count in sorted(by_intent.items()):
+                lines.append(f"intent_{intent_name},{count}")
+        return "\n".join(lines)
+
+
+@app.get("/dashboard/metrics", response_class=HTMLResponse)
+def metrics_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str:
+        metrics = advanced.get_performance_metrics()
+        by_intent = metrics.get("by_intent", {})
+
+        rows = "".join(
+                f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in sorted(by_intent.items())
+        )
+        html = f"""
+        <html>
+            <head>
+                <title>Elibot Metrics Dashboard</title>
+                <style>
+                    body {{ font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #1f2937; }}
+                    h1 {{ margin-bottom: 8px; }}
+                    .card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin-bottom: 16px; }}
+                    table {{ border-collapse: collapse; width: 100%; }}
+                    th, td {{ border: 1px solid #e5e7eb; padding: 8px; text-align: left; }}
+                    th {{ background: #f3f4f6; }}
+                </style>
+            </head>
+            <body>
+                <h1>Elibot Metrics</h1>
+                <div class=\"card\">
+                    <div><strong>Total:</strong> {metrics.get('total', 0)}</div>
+                    <div><strong>Corrected by verifier:</strong> {metrics.get('corrected_by_verifier', 0)}</div>
+                    <div><strong>Rule replies:</strong> {metrics.get('rule_reply', 0)}</div>
+                    <div><strong>Out of domain:</strong> {metrics.get('out_of_domain', 0)}</div>
+                    <div><strong>Updated:</strong> {metrics.get('updated_at', '')}</div>
+                </div>
+                <div class=\"card\">
+                    <h3>By intent</h3>
+                    <table>
+                        <thead><tr><th>Intent</th><th>Count</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                </div>
+                <div><a href=\"/metrics/performance.csv\">Download CSV</a></div>
+            </body>
+        </html>
+        """
+        return html
+
+
 @app.get("/user/{session_id}/preferences")
-def user_preferences(session_id: str) -> dict:
+def user_preferences(session_id: str, _ctx: dict = Depends(require_access("advanced"))) -> dict:
     prefs = advanced.get_user_preferences(session_id)
     return {"session_id": session_id, "preferences": prefs}
