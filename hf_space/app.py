@@ -301,18 +301,97 @@ def chat(message, history):
     return state["history"], state["history"]
 
 
-with gr.Blocks(title="Elibot") as demo:
-    gr.Markdown("# Elibot\nDiscute avec Elibot en francais.")
-    chatbot = gr.Chatbot(label="Conversation")
-    msg = gr.Textbox(label="Message", placeholder="Ecris ton message ici...", lines=2)
-    state = gr.State([])
+def handle_submit(message, history):
+        new_chat, new_state = chat(message, history)
+        return new_chat, new_state, ""
 
-    send = gr.Button("Envoyer")
-    clear = gr.Button("Reinitialiser")
 
-    send.click(chat, inputs=[msg, state], outputs=[chatbot, state])
-    msg.submit(chat, inputs=[msg, state], outputs=[chatbot, state])
-    clear.click(lambda: ([], []), inputs=None, outputs=[chatbot, state])
+APP_CSS = """
+.app-shell {
+    max-width: 980px;
+    margin: 0 auto;
+    border-radius: 20px;
+    border: 1px solid #d7e4da;
+    background: linear-gradient(180deg, #f8fffb 0%, #f1f7f4 100%);
+    box-shadow: 0 20px 40px rgba(18, 52, 38, 0.08);
+    padding: 18px;
+}
+.hero-title h1 {
+    margin: 0;
+    color: #14532d;
+    letter-spacing: 0.2px;
+}
+.hero-sub {
+    color: #3f4f46;
+    margin-top: 6px;
+}
+.quick-row .gr-button {
+    border-radius: 999px !important;
+    border: 1px solid #b6d8c4 !important;
+    background: #e7f5ec !important;
+    color: #0f5132 !important;
+}
+#send-btn {
+    background: #166534 !important;
+    color: white !important;
+}
+#reset-btn {
+    background: #0f766e !important;
+    color: white !important;
+}
+"""
+
+
+with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
+        with gr.Column(elem_classes=["app-shell"]):
+                gr.Markdown(
+                        """
+                        <div class="hero-title"><h1>Elibot</h1></div>
+                        <div class="hero-sub">Assistant francophone. Rapide, poli et plus coherent.</div>
+                        """
+                )
+
+                chatbot = gr.Chatbot(
+                        label="Conversation",
+                        height=430,
+                        bubble_full_width=False,
+                        show_copy_button=True,
+                )
+                state = gr.State([])
+
+                with gr.Row(elem_classes=["quick-row"]):
+                        quick_1 = gr.Button("Bonjour", size="sm")
+                        quick_2 = gr.Button("Comment tu t'appelles ?", size="sm")
+                        quick_3 = gr.Button("Je m'appelle Elisee", size="sm")
+                        quick_4 = gr.Button("Je viens de Conakry", size="sm")
+
+                msg = gr.Textbox(
+                        label="Message",
+                        placeholder="Ecris ton message ici...",
+                        lines=2,
+                        max_lines=4,
+                )
+
+                with gr.Row():
+                        send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
+                        clear = gr.Button("Reinitialiser", elem_id="reset-btn")
+
+        send.click(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
+        msg.submit(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
+        clear.click(lambda: ([], [], ""), inputs=None, outputs=[chatbot, state, msg])
+
+        quick_1.click(lambda: "Bonjour", outputs=[msg]).then(
+                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        )
+        quick_2.click(lambda: "Comment tu t'appelles ?", outputs=[msg]).then(
+                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        )
+        quick_3.click(lambda: "Je m'appelle Elisee", outputs=[msg]).then(
+                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        )
+        quick_4.click(lambda: "Je viens de Conakry", outputs=[msg]).then(
+                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        )
 
 
 demo.launch()
