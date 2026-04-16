@@ -113,6 +113,116 @@ def provider_status() -> dict[str, dict[str, Any]]:
     }
 
 
+def integration_templates() -> dict[str, dict[str, Any]]:
+    return {
+        "github_issue_from_error": {
+            "provider": "github",
+            "action": "create_issue",
+            "description": "Create a GitHub issue from an API/runtime error.",
+            "payload_template": {
+                "title": "[Elibot] {service} error: {error_code}",
+                "body": "Context: {context}\nDetails: {details}",
+                "labels": ["bug", "elibot"],
+            },
+            "required_vars": ["service", "error_code", "context", "details"],
+        },
+        "notion_page_from_summary": {
+            "provider": "notion",
+            "action": "create_page",
+            "description": "Create a Notion page from session summary.",
+            "payload_template": {
+                "title": "Session summary - {project}",
+                "content": "Date: {date}\nKey points:\n{summary}",
+            },
+            "required_vars": ["project", "date", "summary"],
+        },
+        "slack_alert_from_audit": {
+            "provider": "slack",
+            "action": "send_message",
+            "description": "Send an audit alert message to Slack.",
+            "payload_template": {
+                "text": "[Elibot alert] {level}: {message} (ref: {ref_id})",
+            },
+            "required_vars": ["level", "message", "ref_id"],
+        },
+        "discord_alert_from_audit": {
+            "provider": "discord",
+            "action": "send_message",
+            "description": "Send an audit alert message to Discord.",
+            "payload_template": {
+                "text": "[Elibot alert] {level}: {message} (ref: {ref_id})",
+            },
+            "required_vars": ["level", "message", "ref_id"],
+        },
+        "trello_card_from_task": {
+            "provider": "trello",
+            "action": "create_card",
+            "description": "Create a Trello card from a technical task.",
+            "payload_template": {
+                "name": "{task_title}",
+                "desc": "Owner: {owner}\nPriority: {priority}\nNotes: {notes}",
+            },
+            "required_vars": ["task_title", "owner", "priority", "notes"],
+        },
+        "jira_issue_from_incident": {
+            "provider": "jira",
+            "action": "create_issue",
+            "description": "Create a Jira issue from an incident.",
+            "payload_template": {
+                "issue_type": "Task",
+                "summary": "{service} incident - {impact}",
+                "description": "When: {date}\nImpact: {impact}\nDetails: {details}",
+            },
+            "required_vars": ["service", "date", "impact", "details"],
+        },
+        "drive_file_from_summary": {
+            "provider": "google_drive",
+            "action": "create_text_file",
+            "description": "Create a text file in Google Drive from summary.",
+            "payload_template": {
+                "name": "{project}_{date}_summary.txt",
+                "content": "Project: {project}\nDate: {date}\n{summary}",
+            },
+            "required_vars": ["project", "date", "summary"],
+        },
+    }
+
+
+def _render_value(value: Any, variables: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return value.format(**variables)
+    if isinstance(value, list):
+        return [_render_value(v, variables) for v in value]
+    if isinstance(value, dict):
+        return {k: _render_value(v, variables) for k, v in value.items()}
+    return value
+
+
+def build_template_request(template_id: str, variables: dict[str, Any]) -> dict[str, Any]:
+    catalog = integration_templates()
+    tid = (template_id or "").strip()
+    if tid not in catalog:
+        raise ValueError(f"unknown template_id: {template_id}")
+
+    meta = catalog[tid]
+    required_vars = list(meta.get("required_vars", []))
+    missing = [k for k in required_vars if k not in variables or variables.get(k) in {None, ""}]
+    if missing:
+        raise ValueError("missing template variables: " + ", ".join(missing))
+
+    try:
+        payload = _render_value(meta.get("payload_template", {}), variables)
+    except KeyError as exc:
+        raise ValueError(f"missing template variable: {exc}") from exc
+
+    return {
+        "template_id": tid,
+        "provider": meta["provider"],
+        "action": meta["action"],
+        "payload": payload,
+    }
+
+
 def execute_integration(provider: str, action: str, payload: dict[str, Any], dry_run: bool = True) -> dict[str, Any]:
     provider = (provider or "").strip().lower()
     action = (action or "").strip().lower()

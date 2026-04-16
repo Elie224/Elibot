@@ -130,6 +130,25 @@ class IntegrationExecuteRequest(BaseModel):
     dry_run: bool = True
 
 
+class IntegrationTemplateExecuteRequest(BaseModel):
+    template_id: str = Field(..., min_length=3)
+    variables: dict = Field(default_factory=dict)
+    dry_run: bool = True
+
+
+class IntegrationBatchItem(BaseModel):
+    provider: str = Field(..., min_length=2)
+    action: str = Field(..., min_length=2)
+    payload: dict = Field(default_factory=dict)
+
+
+class IntegrationAutomationRunRequest(BaseModel):
+    items: list[IntegrationBatchItem] = Field(default_factory=list)
+    dry_run: bool = True
+    max_actions: int = Field(default=5, ge=1, le=20)
+    stop_on_error: bool = True
+
+
 @dataclass
 class SessionState:
     history: list[tuple[str, str]] = field(default_factory=list)
@@ -862,6 +881,107 @@ def integrations_execute(request: IntegrationExecuteRequest, _ctx: dict = Depend
         }
     )
     return result
+
+
+@app.get("/integrations/templates")
+def integrations_templates(_ctx: dict = Depends(require_access("basic"))) -> dict:
+    return {
+        "templates": external_integrations.integration_templates(),
+    }
+
+
+@app.post("/integrations/execute-template")
+def integrations_execute_template(request: IntegrationTemplateExecuteRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    try:
+        built = external_integrations.build_template_request(
+            template_id=request.template_id,
+            variables=request.variables,
+        )
+        result = external_integrations.execute_integration(
+            provider=built["provider"],
+            action=built["action"],
+            payload=built["payload"],
+            dry_run=bool(request.dry_run),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"integration template error: {exc}")
+
+    advanced.write_audit(
+        {
+            "event": "integration_execute_template",
+            "template_id": request.template_id,
+            "dry_run": request.dry_run,
+            "principal": _ctx.get("principal"),
+            "role": _ctx.get("role"),
+        }
+    )
+    return {
+        "template": built,
+        "execution": result,
+    }
+
+
+@app.post("/automation/run-integrations")
+def automation_run_integrations(request: IntegrationAutomationRunRequest, _ctx: dict = Depends(require_access("advanced"))) -> dict:
+    if not request.items:
+        raise HTTPException(status_code=400, detail="items cannot be empty")
+
+    safe_items = request.items[: request.max_actions]
+    results: list[dict] = []
+    errors = 0
+
+    for idx, item in enumerate(safe_items, start=1):
+        try:
+            run_result = external_integrations.execute_integration(
+                provider=item.provider,
+                action=item.action,
+                payload=item.payload,
+                dry_run=bool(request.dry_run),
+            )
+            results.append({
+                "index": idx,
+                "status": "ok",
+                "provider": item.provider,
+                "action": item.action,
+                "result": run_result,
+            })
+        except Exception as exc:
+            errors += 1
+            results.append(
+                {
+                    "index": idx,
+                    "status": "error",
+                    "provider": item.provider,
+                    "action": item.action,
+                    "error": str(exc),
+                }
+            )
+            if request.stop_on_error:
+                break
+
+    advanced.write_audit(
+        {
+            "event": "automation_run_integrations",
+            "dry_run": request.dry_run,
+            "requested_actions": len(request.items),
+            "executed_actions": len(results),
+            "errors": errors,
+            "principal": _ctx.get("principal"),
+            "role": _ctx.get("role"),
+        }
+    )
+
+    return {
+        "dry_run": request.dry_run,
+        "requested_actions": len(request.items),
+        "executed_actions": len(results),
+        "max_actions": request.max_actions,
+        "stop_on_error": request.stop_on_error,
+        "errors": errors,
+        "results": results,
+    }
 
 
 @app.get("/access/status")
