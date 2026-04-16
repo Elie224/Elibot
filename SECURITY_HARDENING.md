@@ -6,6 +6,7 @@ Elibot API now includes:
 - role-based access control (basic, advanced, admin)
 - rate limiting per minute
 - daily quota enforcement
+- persistent API key store with rotation endpoints
 - metrics dashboard and CSV export
 
 ## Environment variables
@@ -45,3 +46,22 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/automation/plan -Heade
 
 - HTML dashboard: `GET /dashboard/metrics` (admin)
 - CSV export: `GET /metrics/performance.csv` (admin)
+
+## Key rotation endpoints (admin)
+
+- `GET /admin/keys`
+- `POST /admin/keys`
+- `POST /admin/keys/revoke`
+
+Example create key:
+
+```powershell
+$headers = @{ "X-API-Key" = "elibot-admin-key"; "Content-Type" = "application/json" }
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/admin/keys -Headers $headers -Body '{"role":"advanced","label":"ci-runner"}'
+```
+
+## Access/Quota status endpoint
+
+- `GET /access/status` (basic+)
+
+Returns current principal role, rate limit, and quota usage.

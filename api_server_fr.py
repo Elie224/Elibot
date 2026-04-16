@@ -15,6 +15,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 import automation_engine_fr as automation
 import advanced_modules_fr as advanced
+import api_key_store_fr as key_store
 import chat_with_model_fr as runtime
 import context_summarizer_fr as context_summarizer
 import intent_classifier_fr as intent_classifier
@@ -112,6 +113,15 @@ class ToolSuggestRequest(BaseModel):
     message: str = Field(..., min_length=1)
 
 
+class ApiKeyCreateRequest(BaseModel):
+    role: str = Field(default="basic")
+    label: str = Field(default="")
+
+
+class ApiKeyRevokeRequest(BaseModel):
+    key_id: str = Field(..., min_length=8)
+
+
 @dataclass
 class SessionState:
     history: list[tuple[str, str]] = field(default_factory=list)
@@ -158,7 +168,8 @@ def _parse_api_keys(raw: str) -> dict[str, str]:
     return mapping
 
 
-_api_key_role_map = _parse_api_keys(DEFAULT_API_KEYS)
+_api_key_role_map_env = _parse_api_keys(DEFAULT_API_KEYS)
+_bootstrapped_count = key_store.bootstrap_from_env(_api_key_role_map_env)
 
 
 def _enforce_rate_and_quota(principal: str, role: str) -> None:
@@ -189,23 +200,37 @@ def _enforce_rate_and_quota(principal: str, role: str) -> None:
 def _authorize(required_role: str, api_key: str | None, request: Request) -> dict:
     client_host = request.client.host if request.client else "unknown"
 
+    role = "basic"
+    principal = f"anonymous:{client_host}"
+
     if not DEFAULT_REQUIRE_API_KEY:
-        principal = api_key or f"anonymous:{client_host}"
-        role = _api_key_role_map.get(api_key or "", "basic")
+        if api_key:
+            rec = key_store.verify_api_key(api_key)
+            if rec is not None:
+                role = rec["role"]
+                principal = f"key:{str(rec.get('id', ''))[:8]}"
+            else:
+                role = _api_key_role_map_env.get(api_key, "basic")
+                principal = f"env:{api_key[:6]}"
         _enforce_rate_and_quota(principal, role)
         return {"principal": principal, "role": role}
 
     if not api_key:
         raise HTTPException(status_code=401, detail="missing X-API-Key header")
 
-    role = _api_key_role_map.get(api_key)
-    if role is None:
-        raise HTTPException(status_code=401, detail="invalid API key")
+    rec = key_store.verify_api_key(api_key)
+    if rec is not None:
+        role = rec["role"]
+        principal = f"key:{str(rec.get('id', ''))[:8]}"
+    else:
+        role = _api_key_role_map_env.get(api_key)
+        if role is None:
+            raise HTTPException(status_code=401, detail="invalid API key")
+        principal = f"env:{api_key[:6]}"
 
     if _role_rank[role] < _role_rank[required_role]:
         raise HTTPException(status_code=403, detail="insufficient role")
 
-    principal = f"api:{api_key[:6]}"
     _enforce_rate_and_quota(principal, role)
     return {"principal": principal, "role": role}
 
@@ -795,3 +820,53 @@ def metrics_dashboard(_ctx: dict = Depends(require_access("admin"))) -> str:
 def user_preferences(session_id: str, _ctx: dict = Depends(require_access("advanced"))) -> dict:
     prefs = advanced.get_user_preferences(session_id)
     return {"session_id": session_id, "preferences": prefs}
+
+
+@app.get("/access/status")
+def access_status(_ctx: dict = Depends(require_access("basic"))) -> dict:
+    principal = _ctx.get("principal", "unknown")
+    role = _ctx.get("role", "basic")
+    minute_bucket = int(time.time() // 60)
+    day_bucket = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    with _access_lock:
+        rs = _rate_state.get(principal, {"minute": minute_bucket, "count": 0})
+        qs = _quota_state.get(principal, {"day": day_bucket, "count": 0})
+
+    return {
+        "principal": principal,
+        "role": role,
+        "rate_limit_per_min": _role_rate_limit.get(role, DEFAULT_RATE_LIMIT_BASIC),
+        "rate_used_current_min": rs["count"] if rs.get("minute") == minute_bucket else 0,
+        "daily_quota": _role_daily_quota.get(role, DEFAULT_DAILY_QUOTA_BASIC),
+        "daily_used": qs["count"] if qs.get("day") == day_bucket else 0,
+    }
+
+
+@app.get("/admin/keys")
+def admin_list_keys(include_inactive: bool = False, _ctx: dict = Depends(require_access("admin"))) -> dict:
+    return {
+        "count": len(key_store.list_api_keys(include_inactive=include_inactive)),
+        "keys": key_store.list_api_keys(include_inactive=include_inactive),
+    }
+
+
+@app.post("/admin/keys")
+def admin_create_key(request: ApiKeyCreateRequest, _ctx: dict = Depends(require_access("admin"))) -> dict:
+    role = request.role.strip().lower()
+    if role not in _role_rank:
+        raise HTTPException(status_code=400, detail="invalid role")
+
+    created = key_store.create_api_key(role=role, label=request.label)
+    return {
+        "warning": "api_key is shown once. store it securely.",
+        "key": created,
+    }
+
+
+@app.post("/admin/keys/revoke")
+def admin_revoke_key(request: ApiKeyRevokeRequest, _ctx: dict = Depends(require_access("admin"))) -> dict:
+    ok = key_store.revoke_api_key(request.key_id.strip())
+    if not ok:
+        raise HTTPException(status_code=404, detail="key not found or already revoked")
+    return {"status": "revoked", "key_id": request.key_id.strip()}
