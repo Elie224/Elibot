@@ -1,6 +1,9 @@
 import os
+import json
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 
 import torch
@@ -21,6 +24,7 @@ DEFAULT_TOP_P = float(os.getenv("TOP_P", "0.9"))
 DEFAULT_REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.1"))
 DEFAULT_NO_REPEAT_NGRAM = int(os.getenv("NO_REPEAT_NGRAM", "3"))
 DEFAULT_HISTORY_MODE = os.getenv("HISTORY_MODE", "user-only")
+DEFAULT_CHAT_LOG_PATH = os.getenv("CHAT_LOG_PATH", "data/logs/elibot_chat_events.jsonl")
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
@@ -50,11 +54,20 @@ app = FastAPI(title="Elibot API", version="1.0.0")
 
 _state_lock = Lock()
 _sessions: dict[str, SessionState] = {}
+_log_lock = Lock()
 
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 _tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL_DIR)
 _model = AutoModelForSeq2SeqLM.from_pretrained(DEFAULT_MODEL_DIR).to(_device)
 _model.eval()
+
+
+def _append_chat_event(event: dict) -> None:
+    path = Path(DEFAULT_CHAT_LOG_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _log_lock:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 CHAT_UI_HTML = """
 <!doctype html>
@@ -283,6 +296,7 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=400, detail="message cannot be empty")
 
     runtime.update_profile_from_user_text(user_text, state.profile)
+    in_domain = runtime.is_in_domain_query(user_text)
 
     direct = runtime.maybe_rule_reply(user_text, state.profile)
     if direct:
@@ -327,6 +341,19 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
+
+    _append_chat_event(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": sid,
+            "user_text": user_text,
+            "assistant_text": answer,
+            "in_domain": in_domain,
+            "used_rule_reply": bool(direct),
+            "is_low_quality": runtime.is_low_quality_answer(answer),
+            "profile": dict(state.profile),
+        }
+    )
 
     return ChatResponse(session_id=sid, response=answer, profile=state.profile)
 
