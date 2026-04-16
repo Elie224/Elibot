@@ -158,6 +158,19 @@ Manual dry-run test for daily light runner:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily_light_training.ps1 -DryRun
 ```
 
+Daily light safety guardrails:
+
+- overlap protection with lock file (`reports/scheduled/daily_light_train.lock`)
+- auto safety dry-run when CPU is high (`-MaxCpuPercent`, default `90`)
+- auto safety dry-run when free GPU memory is low (`-MinFreeGpuMb`, default `1500`)
+- auto safety dry-run when `nvidia-smi` is unavailable
+
+To force a full run even when guardrails would switch to dry-run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily_light_training.ps1 -ForceFullRun
+```
+
 Manual dry-run test:
 
 ```powershell
