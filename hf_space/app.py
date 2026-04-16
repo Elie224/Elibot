@@ -1,6 +1,7 @@
 import gradio as gr
 import re
 import torch
+import uuid
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 
@@ -369,9 +370,75 @@ def handle_submit(message, history):
         return new_chat, new_state, ""
 
 
+def _format_tasks(tasks):
+    if not tasks:
+        return "Aucune tache pour le moment."
+
+    lines = []
+    for t in tasks:
+        lines.append(
+            f"- [{t['status']}] {t['title']} (restant: {t['remaining_steps']}, erreurs: {len(t['errors'])})"
+        )
+    return "\n".join(lines)
+
+
+def _task_choices(tasks):
+    return [f"{t['task_id']} | {t['title']}" for t in tasks]
+
+
+def add_task_ui(title, steps_text, tasks):
+    items = list(tasks or [])
+    clean_title = (title or "").strip()
+    if not clean_title:
+        return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None), "", ""
+
+    steps = [x.strip() for x in (steps_text or "").split(",") if x.strip()]
+    items.append(
+        {
+            "task_id": str(uuid.uuid4())[:8],
+            "title": clean_title,
+            "steps": steps,
+            "done_steps": [],
+            "remaining_steps": len(steps),
+            "status": "active",
+            "errors": [],
+        }
+    )
+    return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None), "", ""
+
+
+def mark_task_done_ui(selected_task, tasks):
+    items = list(tasks or [])
+    if not selected_task:
+        return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None)
+
+    task_id = selected_task.split("|", 1)[0].strip()
+    for t in items:
+        if t["task_id"] == task_id:
+            t["status"] = "done"
+            t["remaining_steps"] = 0
+            break
+    return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None)
+
+
+def mark_task_error_ui(selected_task, error_text, tasks):
+    items = list(tasks or [])
+    if not selected_task:
+        return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None), ""
+
+    task_id = selected_task.split("|", 1)[0].strip()
+    for t in items:
+        if t["task_id"] == task_id:
+            t["status"] = "blocked"
+            if (error_text or "").strip():
+                t["errors"].append(error_text.strip())
+            break
+    return items, _format_tasks(items), gr.update(choices=_task_choices(items), value=None), ""
+
+
 APP_CSS = """
 .app-shell {
-    max-width: 980px;
+    max-width: 1200px;
     margin: 0 auto;
     border-radius: 20px;
     border: 1px solid #d7e4da;
@@ -402,25 +469,35 @@ APP_CSS = """
     background: #0f766e !important;
     color: white !important;
 }
+.task-card {
+    border: 1px solid #d7e4da;
+    border-radius: 14px;
+    background: #f6fbf8;
+    padding: 10px;
+}
 """
 
 
 with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
-        with gr.Column(elem_classes=["app-shell"]):
-                gr.Markdown(
-                        """
-                        <div class="hero-title"><h1>Elibot</h1></div>
-                    <div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>
-                        """
-                )
+    with gr.Column(elem_classes=["app-shell"]):
+        gr.Markdown(
+            """
+            <div class="hero-title"><h1>Elibot</h1></div>
+            <div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>
+            """
+        )
 
+        state = gr.State([])
+        tasks_state = gr.State([])
+
+        with gr.Row():
+            with gr.Column(scale=3):
                 chatbot = gr.Chatbot(
-                        label="Conversation",
-                        height=430,
-                        bubble_full_width=False,
-                        show_copy_button=True,
+                    label="Conversation",
+                    height=430,
+                    bubble_full_width=False,
+                    show_copy_button=True,
                 )
-                state = gr.State([])
 
                 with gr.Row(elem_classes=["quick-row"]):
                     quick_1 = gr.Button("Explique un pipeline ML", size="sm")
@@ -429,15 +506,27 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
                     quick_4 = gr.Button("Automatiser un workflow CSV", size="sm")
 
                 msg = gr.Textbox(
-                        label="Message",
-                        placeholder="Ecris ton message ici...",
-                        lines=2,
-                        max_lines=4,
+                    label="Message",
+                    placeholder="Ecris ton message ici...",
+                    lines=2,
+                    max_lines=4,
                 )
 
                 with gr.Row():
-                        send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
-                        clear = gr.Button("Reinitialiser", elem_id="reset-btn")
+                    send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
+                    clear = gr.Button("Reinitialiser", elem_id="reset-btn")
+
+            with gr.Column(scale=2, elem_classes=["task-card"]):
+                gr.Markdown("### Taches")
+                task_title = gr.Textbox(label="Nouvelle tache", placeholder="Ex: Preparer pipeline")
+                task_steps = gr.Textbox(label="Etapes (virgules)", placeholder="collecte, nettoyage, entrainement")
+                add_task_btn = gr.Button("Ajouter tache", variant="primary")
+                task_select = gr.Dropdown(label="Selectionner tache", choices=[])
+                task_error = gr.Textbox(label="Erreur tache", placeholder="Optionnel")
+                with gr.Row():
+                    task_done_btn = gr.Button("Marquer terminee")
+                    task_block_btn = gr.Button("Signaler erreur")
+                task_view = gr.Markdown("Aucune tache pour le moment.")
 
         send.click(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
         msg.submit(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
@@ -454,6 +543,24 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
         )
         quick_4.click(lambda: "Comment automatiser un workflow de nettoyage CSV en Python ?", outputs=[msg]).then(
                 handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        )
+
+        add_task_btn.click(
+            add_task_ui,
+            inputs=[task_title, task_steps, tasks_state],
+            outputs=[tasks_state, task_view, task_select, task_title, task_steps],
+        )
+
+        task_done_btn.click(
+            mark_task_done_ui,
+            inputs=[task_select, tasks_state],
+            outputs=[tasks_state, task_view, task_select],
+        )
+
+        task_block_btn.click(
+            mark_task_error_ui,
+            inputs=[task_select, task_error, tasks_state],
+            outputs=[tasks_state, task_view, task_select, task_error],
         )
 
 
