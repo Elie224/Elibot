@@ -12,7 +12,7 @@ if (-not (Test-Path $runScript)) {
     throw "Run script not found at: $runScript"
 }
 
-$taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runScript`""
+$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $runScript
 
 schtasks /Delete /TN "$TaskName" /F | Out-Null
 
