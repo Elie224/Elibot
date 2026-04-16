@@ -68,6 +68,55 @@ def clean_generated_text(text):
     return value
 
 
+def is_low_quality_answer(answer):
+    text = " ".join((answer or "").strip().lower().split())
+    if not text:
+        return True
+
+    bad_patterns = [
+        "je ne peux pas te dire que tu veux dire",
+        "je veux dire que je n'ai pas besoin",
+        "reheatreheatreheat",
+        "synchronoussynchronous",
+        "municipal municipal",
+    ]
+    if any(p in text for p in bad_patterns):
+        return True
+
+    # Many duplicated words strongly indicate degeneration.
+    tokens = text.split()
+    if len(tokens) >= 12:
+        uniq_ratio = len(set(tokens)) / max(1, len(tokens))
+        if uniq_ratio < 0.55:
+            return True
+
+    if text in {"je ne sais pas.", "je sais pas.", "ok.", "d'accord."}:
+        return True
+
+    return False
+
+
+def fallback_reply(user_text, profile):
+    q = (user_text or "").lower().strip()
+
+    if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
+        return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
+
+    if ("comment" in q and "t'appelle" in q) or ("ton nom" in q) or ("qui es tu" in q) or ("qui es-tu" in q):
+        return "Je m'appelle Elibot."
+
+    if "je comprends pas" in q or "je ne comprends pas" in q:
+        return "Pas de souci. Dis-moi juste ce que tu veux faire, en une phrase simple."
+
+    if "merci" in q:
+        return "Avec plaisir."
+
+    if "prenom" in profile:
+        return f"D'accord {profile['prenom']}, peux-tu reformuler en une phrase simple ?"
+
+    return "Je n'ai pas bien compris. Peux-tu reformuler en une phrase simple ?"
+
+
 def update_profile_from_user_text(user_text, profile):
     text = user_text.strip()
 
@@ -129,13 +178,27 @@ def maybe_rule_reply(user_text, profile):
     if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
         return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
 
-    asks_name = ("prenom" in q) or ("prénom" in q) or ("comment je m'appelle" in q) or ("qui suis-je" in q)
+    asks_name = (
+        ("prenom" in q)
+        or ("prénom" in q)
+        or ("comment je m'appelle" in q)
+        or ("qui suis-je" in q)
+        or ("comment tu t'appelle" in q)
+        or ("comment tu t'appelles" in q)
+        or ("ton nom" in q)
+    )
     asks_city = ("ville" in q) or ("j'habite" in q) or ("je vis" in q)
     asks_sport = ("sport" in q) or ("j'aime" in q)
     asks_goal = ("objectif" in q) or ("course" in q) or ("entrain" in q)
     asks_advice = ("conseil" in q) or ("demain" in q)
 
-    if ("qui es-tu" in q) or ("qui es tu" in q) or ("ton nom" in q) or ("comment tu t'appelles" in q):
+    if (
+        ("qui es-tu" in q)
+        or ("qui es tu" in q)
+        or ("ton nom" in q)
+        or ("comment tu t'appelle" in q)
+        or ("comment tu t'appelles" in q)
+    ):
         return "Je m'appelle Elibot. Je suis la pour discuter avec toi de facon naturelle et utile."
 
     if asks_name and asks_city:
@@ -231,8 +294,8 @@ def chat(message, history):
 
     answer = TOKENIZER.decode(output_ids[0], skip_special_tokens=True)
     answer = clean_generated_text(answer)
-    if not answer:
-        answer = "Je suis la pour t'aider. Peux-tu reformuler en une phrase simple ?"
+    if not answer or is_low_quality_answer(answer):
+        answer = fallback_reply(user_text, state["profile"])
 
     state["history"].append((user_text, answer))
     return state["history"], state["history"]
