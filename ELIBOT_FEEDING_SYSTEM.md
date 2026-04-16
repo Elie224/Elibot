@@ -126,3 +126,22 @@ Production weekly run:
 ```
 
 If a step fails, the runner stops and reports the failing step with command output tail.
+
+## 8) Windows weekly scheduling
+
+Scripts added:
+
+- `scripts/run_weekly_training.ps1`: launches weekly runner with logging to `reports/scheduled/`
+- `scripts/register_weekly_task.ps1`: creates a weekly Windows task (`schtasks`)
+
+Register (default: Sunday 03:00):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_weekly_task.ps1 -Day SUN -Time 03:00
+```
+
+Manual dry-run test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_weekly_training.ps1 -DryRun
+```
