@@ -2,6 +2,8 @@
 
 This layer adds 10 advanced modules on top of existing Elibot capabilities.
 
+Feeding and continual-learning architecture: `ELIBOT_FEEDING_SYSTEM.md`
+
 ## Included modules
 
 1. Context Injection
