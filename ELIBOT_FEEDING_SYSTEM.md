@@ -146,6 +146,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_weekly_ta
  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_weekly_task_system_admin.ps1 -Day SUN -Time 03:00
  ```
 
+Optional daily light run (smaller budget, faster refresh):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_daily_light_task_system_admin.ps1 -Time 01:30
+```
+
+Manual dry-run test for daily light runner:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily_light_training.ps1 -DryRun
+```
+
 Manual dry-run test:
 
 ```powershell
