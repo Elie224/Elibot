@@ -14,6 +14,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 import automation_engine_fr as automation
 import chat_with_model_fr as runtime
+import context_summarizer_fr as context_summarizer
 import intent_classifier_fr as intent_classifier
 from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 import response_verifier_fr as verifier
@@ -24,6 +25,8 @@ DEFAULT_HISTORY_TURNS = int(os.getenv("HISTORY_TURNS", "4"))
 DEFAULT_MAX_INPUT_LENGTH = int(os.getenv("MAX_INPUT_LENGTH", "512"))
 DEFAULT_MAX_NEW_TOKENS = int(os.getenv("MAX_NEW_TOKENS", "72"))
 DEFAULT_AUTOMATION_MAX_NEW_TOKENS = int(os.getenv("AUTOMATION_MAX_NEW_TOKENS", "220"))
+DEFAULT_SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "4"))
+DEFAULT_SUMMARY_MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "1200"))
 DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 DEFAULT_TOP_P = float(os.getenv("TOP_P", "0.9"))
 DEFAULT_REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.1"))
@@ -85,6 +88,8 @@ class IntentClassifyResponse(BaseModel):
 class SessionState:
     history: list[tuple[str, str]] = field(default_factory=list)
     profile: dict[str, str] = field(default_factory=dict)
+    summary: str = ""
+    user_turn_count: int = 0
 
 
 app = FastAPI(title="Elibot API", version="1.0.0")
@@ -362,6 +367,10 @@ def chat(request: ChatRequest) -> ChatResponse:
     if direct:
         answer = direct
     else:
+        summary_context = context_summarizer.format_summary_context(state.summary)
+        knowledge_context = format_knowledge_context(_kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K))
+        combined_context = "\n".join([x for x in [summary_context, knowledge_context] if x]).strip()
+
         prompt = runtime.build_prompt(
             system_prompt=DEFAULT_SYSTEM_PROMPT,
             history=state.history,
@@ -370,7 +379,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             history_mode=DEFAULT_HISTORY_MODE,
             profile=state.profile,
             use_slot_memory=True,
-            knowledge_context=format_knowledge_context(_kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K)),
+            knowledge_context=combined_context,
         )
 
         inputs = _tokenizer(
@@ -404,6 +413,15 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
+    state.user_turn_count += 1
+
+    if state.user_turn_count % max(1, DEFAULT_SUMMARY_INTERVAL) == 0:
+        state.summary = context_summarizer.build_dynamic_summary(
+            history=state.history,
+            profile=state.profile,
+            previous_summary=state.summary,
+            max_chars=DEFAULT_SUMMARY_MAX_CHARS,
+        )
 
     _append_chat_event(
         {
@@ -417,6 +435,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             "is_low_quality": runtime.is_low_quality_answer(answer),
             "verifier_issues": verifier_issues,
             "corrected_by_verifier": corrected_by_verifier,
+            "summary": state.summary,
             "profile": dict(state.profile),
         }
     )
@@ -430,6 +449,20 @@ def reset_session(session_id: str) -> dict[str, str]:
         if session_id in _sessions:
             del _sessions[session_id]
     return {"status": "reset", "session_id": session_id}
+
+
+@app.get("/session/{session_id}/summary")
+def session_summary(session_id: str) -> dict:
+    with _state_lock:
+        state = _sessions.get(session_id)
+        if state is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return {
+            "session_id": session_id,
+            "summary": state.summary,
+            "user_turn_count": state.user_turn_count,
+            "history_items": len(state.history),
+        }
 
 
 @app.post("/automation/plan", response_model=AutomationPlanResponse)
