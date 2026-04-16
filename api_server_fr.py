@@ -14,6 +14,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 import automation_engine_fr as automation
 import chat_with_model_fr as runtime
+from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 
 
 DEFAULT_MODEL_DIR = os.getenv("MODEL_DIR", "models/chatbot-fr-flan-t5-small-v2-convfix")
@@ -26,6 +27,7 @@ DEFAULT_TOP_P = float(os.getenv("TOP_P", "0.9"))
 DEFAULT_REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", "1.1"))
 DEFAULT_NO_REPEAT_NGRAM = int(os.getenv("NO_REPEAT_NGRAM", "3"))
 DEFAULT_HISTORY_MODE = os.getenv("HISTORY_MODE", "user-only")
+DEFAULT_KNOWLEDGE_TOP_K = int(os.getenv("KNOWLEDGE_TOP_K", "3"))
 DEFAULT_CHAT_LOG_PATH = os.getenv("CHAT_LOG_PATH", "data/logs/elibot_chat_events.jsonl")
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
@@ -83,6 +85,7 @@ _device = "cuda" if torch.cuda.is_available() else "cpu"
 _tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL_DIR)
 _model = AutoModelForSeq2SeqLM.from_pretrained(DEFAULT_MODEL_DIR).to(_device)
 _model.eval()
+_kb = KnowledgeBase()
 
 
 def _append_chat_event(event: dict) -> None:
@@ -333,6 +336,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             history_mode=DEFAULT_HISTORY_MODE,
             profile=state.profile,
             use_slot_memory=True,
+            knowledge_context=format_knowledge_context(_kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K)),
         )
 
         inputs = _tokenizer(

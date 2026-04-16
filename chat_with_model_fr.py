@@ -5,6 +5,7 @@ import re
 
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+from knowledge_retrieval_fr import KnowledgeBase, format_knowledge_context
 
 
 DOMAIN_TOPICS = [
@@ -59,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=0.9)
     parser.add_argument("--repetition-penalty", type=float, default=1.1)
+    parser.add_argument("--use-knowledge-base", action="store_true")
+    parser.add_argument("--knowledge-top-k", type=int, default=3)
     return parser.parse_args()
 
 
@@ -324,11 +327,14 @@ def build_prompt(
     history_mode: str,
     profile: dict[str, str],
     use_slot_memory: bool,
+    knowledge_context: str = "",
 ) -> str:
     turns = max(0, history_turns)
     recent_messages = history[-(turns * 2) :] if turns > 0 else []
 
     lines = [f"Systeme: {system_prompt}"]
+    if knowledge_context:
+        lines.append(knowledge_context)
     if use_slot_memory:
         lines.extend(build_memory_lines(profile))
     for role, text in recent_messages:
@@ -346,6 +352,7 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_dir).to(device)
+    kb = KnowledgeBase() if args.use_knowledge_base else None
     history: list[tuple[str, str]] = []
     profile: dict[str, str] = load_profile(args.profile_path) if args.save_profile else {}
 
@@ -392,6 +399,7 @@ def main() -> None:
             history_mode=args.history_mode,
             profile=profile,
             use_slot_memory=args.use_slot_memory,
+            knowledge_context=format_knowledge_context(kb.search(user_text, top_k=args.knowledge_top_k)) if kb else "",
         )
         inputs = tokenizer(
             prompt,
