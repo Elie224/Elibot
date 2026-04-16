@@ -23,8 +23,9 @@ DEFAULT_NO_REPEAT_NGRAM = int(os.getenv("NO_REPEAT_NGRAM", "3"))
 DEFAULT_HISTORY_MODE = os.getenv("HISTORY_MODE", "user-only")
 DEFAULT_SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
-    "Tu es Elibot, un assistant francophone humain, naturel, poli et coherent. "
-    "Tu reponds avec chaleur, de maniere claire et concise, sans etre robotique.",
+    "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
+    "Tu reponds de facon claire et professionnelle. "
+    "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique.",
 )
 
 
@@ -248,7 +249,7 @@ CHAT_UI_HTML = """
             }
         });
 
-        addMessage("Bonjour, je suis Elibot. Pose-moi une question.", 'bot');
+        addMessage("Bonjour, je suis Elibot. Je suis specialise data, IA et automatisation. Pose-moi une question technique.", 'bot');
         input.focus();
     </script>
 </body>
@@ -321,6 +322,8 @@ def chat(request: ChatRequest) -> ChatResponse:
 
         answer = _tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         answer = runtime.clean_generated_text(answer)
+        if runtime.is_low_quality_answer(answer):
+            answer = runtime.fallback_reply(user_text)
 
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))

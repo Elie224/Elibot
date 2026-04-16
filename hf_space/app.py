@@ -3,6 +3,30 @@ import re
 import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
+
+DOMAIN_TOPICS = [
+    "analyse de donnees",
+    "machine learning",
+    "ia appliquee",
+    "automatisation",
+    "pipelines",
+    "api",
+]
+
+IN_DOMAIN_KEYWORDS = {
+    "data", "donnee", "donnees", "dataset", "csv", "json", "excel", "table", "sql",
+    "pandas", "numpy", "analyse", "nettoyage", "feature", "visualisation", "statistique",
+    "ml", "ia", "ai", "machine learning", "modele", "model", "entrainement", "evaluation",
+    "classification", "regression", "prediction", "prompt", "llm", "token", "embedding",
+    "pipeline", "workflow", "automatisation", "script", "python", "fastapi", "api", "docker",
+}
+
+OUT_DOMAIN_KEYWORDS = {
+    "medecine", "medical", "maladie", "diagnostic", "traitement", "politique", "election",
+    "religion", "psychologie", "depression", "amour", "relation", "sexe", "voyance", "astrologie",
+    "finance personnelle", "pari", "bet", "casino", "juridique", "avocat",
+}
+
 MODEL_ID = "Elie224/Elibot"
 MAX_INPUT_LENGTH = 512
 MAX_NEW_TOKENS = 96
@@ -13,8 +37,9 @@ NO_REPEAT_NGRAM = 3
 HISTORY_TURNS = 4
 HISTORY_MODE = "user-only"
 SYSTEM_PROMPT = (
-    "Tu es Elibot, un assistant francophone humain, naturel, poli et coherent. "
-    "Tu reponds avec chaleur, de maniere claire et concise, sans etre robotique."
+    "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
+    "Tu reponds de facon claire, concise et professionnelle. "
+    "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique."
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -68,6 +93,31 @@ def clean_generated_text(text):
     return value
 
 
+def _normalize_text(value):
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9à-öø-ÿ\s]", " ", value.lower())).strip()
+
+
+def is_in_domain_query(user_text):
+    text = _normalize_text(user_text or "")
+    if not text:
+        return True
+    if text in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc", "merci"}:
+        return True
+    if any(k in text for k in OUT_DOMAIN_KEYWORDS):
+        return False
+    return any(k in text for k in IN_DOMAIN_KEYWORDS)
+
+
+def out_of_domain_reply():
+    topics = ", ".join(DOMAIN_TOPICS)
+    return (
+        "Je suis specialise en "
+        f"{topics}. "
+        "Je ne traite pas les sujets hors de ce cadre. "
+        "Pose une question technique (ex: pipeline ML, API FastAPI, nettoyage de dataset) et je t'aide."
+    )
+
+
 def is_low_quality_answer(answer):
     text = " ".join((answer or "").strip().lower().split())
     if not text:
@@ -98,6 +148,9 @@ def is_low_quality_answer(answer):
 
 def fallback_reply(user_text, profile):
     q = (user_text or "").lower().strip()
+
+    if not is_in_domain_query(q):
+        return out_of_domain_reply()
 
     if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
         return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
@@ -174,9 +227,19 @@ def build_memory_lines(profile):
 
 def maybe_rule_reply(user_text, profile):
     q = user_text.lower().strip()
+    q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
+
+    if not is_in_domain_query(q):
+        return out_of_domain_reply()
 
     if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
         return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
+
+    if "que fais tu" in q_norm or "tu fais quoi" in q_norm or "ton domaine" in q:
+        return (
+            "Je suis specialise en analyse de donnees, IA appliquee et automatisation. "
+            "Je peux t'aider sur pipelines, modeles, API, debugging Python et workflows techniques."
+        )
 
     asks_name = (
         ("prenom" in q)
@@ -347,7 +410,7 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
                 gr.Markdown(
                         """
                         <div class="hero-title"><h1>Elibot</h1></div>
-                        <div class="hero-sub">Assistant francophone. Rapide, poli et plus coherent.</div>
+                    <div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>
                         """
                 )
 
@@ -360,10 +423,10 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
                 state = gr.State([])
 
                 with gr.Row(elem_classes=["quick-row"]):
-                        quick_1 = gr.Button("Bonjour", size="sm")
-                        quick_2 = gr.Button("Comment tu t'appelles ?", size="sm")
-                        quick_3 = gr.Button("Je m'appelle Elisee", size="sm")
-                        quick_4 = gr.Button("Je viens de Conakry", size="sm")
+                    quick_1 = gr.Button("Explique un pipeline ML", size="sm")
+                    quick_2 = gr.Button("Corrige ce code pandas", size="sm")
+                    quick_3 = gr.Button("Architecture API FastAPI", size="sm")
+                    quick_4 = gr.Button("Automatiser un workflow CSV", size="sm")
 
                 msg = gr.Textbox(
                         label="Message",
@@ -380,16 +443,16 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
         msg.submit(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
         clear.click(lambda: ([], [], ""), inputs=None, outputs=[chatbot, state, msg])
 
-        quick_1.click(lambda: "Bonjour", outputs=[msg]).then(
+        quick_1.click(lambda: "Peux-tu expliquer un pipeline machine learning de bout en bout ?", outputs=[msg]).then(
                 handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
         )
-        quick_2.click(lambda: "Comment tu t'appelles ?", outputs=[msg]).then(
+        quick_2.click(lambda: "Voici un script pandas lent, comment l'optimiser ?", outputs=[msg]).then(
                 handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
         )
-        quick_3.click(lambda: "Je m'appelle Elisee", outputs=[msg]).then(
+        quick_3.click(lambda: "Propose une architecture FastAPI pour servir un modele ML.", outputs=[msg]).then(
                 handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
         )
-        quick_4.click(lambda: "Je viens de Conakry", outputs=[msg]).then(
+        quick_4.click(lambda: "Comment automatiser un workflow de nettoyage CSV en Python ?", outputs=[msg]).then(
                 handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
         )
 

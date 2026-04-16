@@ -7,6 +7,30 @@ import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 
+DOMAIN_TOPICS = [
+    "analyse de donnees",
+    "machine learning",
+    "ia appliquee",
+    "automatisation",
+    "pipelines",
+    "api",
+]
+
+IN_DOMAIN_KEYWORDS = {
+    "data", "donnee", "donnees", "dataset", "csv", "json", "excel", "table", "sql",
+    "pandas", "numpy", "analyse", "nettoyage", "feature", "visualisation", "statistique",
+    "ml", "ia", "ai", "machine learning", "modele", "model", "entrainement", "evaluation",
+    "classification", "regression", "prediction", "prompt", "llm", "token", "embedding",
+    "pipeline", "workflow", "automatisation", "script", "python", "fastapi", "api", "docker",
+}
+
+OUT_DOMAIN_KEYWORDS = {
+    "medecine", "medical", "maladie", "diagnostic", "traitement", "politique", "election",
+    "religion", "psychologie", "depression", "amour", "relation", "sexe", "voyance", "astrologie",
+    "finance personnelle", "pari", "bet", "casino", "juridique", "avocat",
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Chat with the trained French chatbot model")
     parser.add_argument("--model-dir", default="models/chatbot-fr-flan-t5-small-v2-convfix")
@@ -25,8 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--system-prompt",
         default=(
-            "Tu es Elibot, un assistant francophone humain, naturel, poli et coherent. "
-            "Tu reponds avec chaleur, de maniere claire et concise, sans etre robotique."
+            "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
+            "Tu reponds de facon claire, concise et professionnelle. "
+            "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique."
         ),
     )
     parser.add_argument("--max-new-tokens", type=int, default=96)
@@ -93,6 +118,81 @@ def clean_generated_text(text: str) -> str:
     return value
 
 
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9à-öø-ÿ\s]", " ", value.lower())).strip()
+
+
+def is_in_domain_query(user_text: str) -> bool:
+    text = _normalize_text(user_text)
+    if not text:
+        return True
+
+    # Keep short social openers in-domain to avoid robotic UX.
+    if text in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc", "merci"}:
+        return True
+
+    if any(k in text for k in OUT_DOMAIN_KEYWORDS):
+        return False
+
+    return any(k in text for k in IN_DOMAIN_KEYWORDS)
+
+
+def out_of_domain_reply() -> str:
+    topics = ", ".join(DOMAIN_TOPICS)
+    return (
+        "Je suis specialise en "
+        f"{topics}. "
+        "Je ne traite pas les sujets hors de ce cadre. "
+        "Envoie une question technique (ex: pipeline ML, API FastAPI, nettoyage de dataset) et je t'aide."
+    )
+
+
+def is_low_quality_answer(answer: str) -> bool:
+    text = " ".join(answer.strip().lower().split())
+    if not text:
+        return True
+
+    # Catch unstable patterns frequently produced by the base model.
+    bad_patterns = [
+        "je ne peux pas te dire que tu veux dire",
+        "je veux dire que je n'ai pas besoin",
+        "je ne sais pas. je veux dire",
+        "je n'ai pas l'air",
+        "je veux dire que",
+    ]
+    if any(p in text for p in bad_patterns):
+        return True
+
+    if re.search(r"\b(de\s+te\s+dire\s+que\s+tu|vous\s+avez\s+une\s+idee\s+de)\b", text):
+        return True
+
+    # If a sentence is repeated verbatim, treat as low quality.
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+    if len(parts) >= 2 and len(set(parts)) < len(parts):
+        return True
+
+    # Extremely short low-information outputs.
+    if text in {"je ne sais pas.", "je sais pas.", "ok.", "d'accord."}:
+        return True
+
+    # Detect odd self-contradictory structures often seen in bad generations.
+    if text.count("je ne") >= 2 and "je veux dire" in text:
+        return True
+
+    return False
+
+
+def fallback_reply(user_text: str) -> str:
+    q = user_text.strip().lower()
+    if not is_in_domain_query(q):
+        return out_of_domain_reply()
+    if q in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
+        return "Salut, ravi de te parler. Dis-moi ce que tu veux faire et je t'aide."
+    if "comment" in q and "ca va" in q:
+        return "Je vais bien, merci. Et toi, comment tu vas ?"
+    return "Je n'ai pas bien compris. Peux-tu reformuler en une phrase simple et precise ?"
+
+
 def update_profile_from_user_text(user_text: str, profile: dict[str, str]) -> None:
     text = user_text.strip()
 
@@ -145,7 +245,36 @@ def build_memory_lines(profile: dict[str, str]) -> list[str]:
 
 
 def maybe_rule_reply(user_text: str, profile: dict[str, str]) -> str | None:
-    q = user_text.lower()
+    q = user_text.lower().strip()
+    q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
+
+    if not is_in_domain_query(q):
+        return out_of_domain_reply()
+
+    if q_norm in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc"}:
+        return "Salut, ravi de te parler. Comment je peux t'aider aujourd'hui ?"
+
+    if q in {"je comprends pas", "je ne comprends pas", "j'ai pas compris"}:
+        return "Pas de souci. Dis-moi juste ce que tu veux faire en une phrase simple, et je t'aide."
+
+    if "je m'appelle" in q or q.startswith("je suis "):
+        if "prenom" in profile and "ville" in profile:
+            return f"Enchanté {profile['prenom']}. J'ai noté que tu viens de {profile['ville']}."
+        if "prenom" in profile:
+            return f"Enchanté {profile['prenom']}. Ravi de faire ta connaissance."
+        return "Ravi de te connaitre."
+
+    if ("comment" in q and "ca va" in q) or ("comment" in q and "ça va" in q):
+        return "Je vais bien, merci. Et toi, comment tu vas ?"
+
+    if "merci" in q:
+        return "Avec plaisir. Si tu veux, on continue."
+
+    if "que fais tu" in q_norm or "tu fais quoi" in q_norm or "ton domaine" in q:
+        return (
+            "Je suis specialise en analyse de donnees, IA appliquee et automatisation. "
+            "Je peux t'aider sur pipelines, modeles, API, debugging Python et workflows techniques."
+        )
 
     asks_name = ("prenom" in q) or ("prénom" in q) or ("comment je m'appelle" in q) or ("qui suis-je" in q)
     asks_city = ("ville" in q) or ("j'habite" in q) or ("je vis" in q)
@@ -247,7 +376,7 @@ def main() -> None:
             if args.save_profile:
                 save_profile(args.profile_path, profile)
 
-        if args.use_slot_memory and not args.disable_rule_replies:
+        if not args.disable_rule_replies:
             direct = maybe_rule_reply(user_text, profile)
             if direct:
                 history.append(("Utilisateur", user_text))
@@ -292,6 +421,8 @@ def main() -> None:
         answer = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         if args.clean_output:
             answer = clean_generated_text(answer)
+        if is_low_quality_answer(answer):
+            answer = fallback_reply(user_text)
         history.append(("Utilisateur", user_text))
         history.append(("Assistant", answer))
         print(f"Bot: {answer}\n")
