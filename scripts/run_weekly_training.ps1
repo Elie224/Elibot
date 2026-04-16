@@ -21,10 +21,24 @@ if (-not (Test-Path $logsDir)) {
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $logsDir ("weekly_train_" + $timestamp + ".log")
+$lockFile = Join-Path $logsDir "weekly_train.lock"
+
+if (Test-Path $lockFile) {
+    "[$(Get-Date -Format o)] SKIP: another weekly run appears active (lock file present)." | Out-File -FilePath $logFile -Encoding utf8
+    exit 0
+}
+
+New-Item -Path $lockFile -ItemType File -Force | Out-Null
 
 "[$(Get-Date -Format o)] START weekly training run" | Out-File -FilePath $logFile -Encoding utf8
 "Python: $PythonPath" | Out-File -FilePath $logFile -Append -Encoding utf8
 "Project: $ProjectRoot" | Out-File -FilePath $logFile -Append -Encoding utf8
+
+if (-not (Test-Path (Join-Path $ProjectRoot $RunnerScript))) {
+    "[$(Get-Date -Format o)] ERROR: runner script not found: $RunnerScript" | Out-File -FilePath $logFile -Append -Encoding utf8
+    if (Test-Path $lockFile) { Remove-Item $lockFile -Force -ErrorAction SilentlyContinue }
+    exit 1
+}
 
 $arguments = @(
     $RunnerScript,
@@ -43,8 +57,19 @@ if ($ExtraRunnerArgs.Count -gt 0) {
     $arguments += $ExtraRunnerArgs
 }
 
-& $PythonPath @arguments *>> $logFile
-$exitCode = $LASTEXITCODE
-
-"[$(Get-Date -Format o)] END weekly training run (exit=$exitCode)" | Out-File -FilePath $logFile -Append -Encoding utf8
-exit $exitCode
+try {
+    & $PythonPath @arguments *>> $logFile
+    $exitCode = $LASTEXITCODE
+    "[$(Get-Date -Format o)] END weekly training run (exit=$exitCode)" | Out-File -FilePath $logFile -Append -Encoding utf8
+    exit $exitCode
+}
+catch {
+    "[$(Get-Date -Format o)] ERROR: $($_.Exception.Message)" | Out-File -FilePath $logFile -Append -Encoding utf8
+    "[$(Get-Date -Format o)] END weekly training run (exit=1)" | Out-File -FilePath $logFile -Append -Encoding utf8
+    exit 1
+}
+finally {
+    if (Test-Path $lockFile) {
+        Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    }
+}
