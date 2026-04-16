@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 import automation_engine_fr as automation
+import advanced_modules_fr as advanced
 import chat_with_model_fr as runtime
 import context_summarizer_fr as context_summarizer
 import intent_classifier_fr as intent_classifier
@@ -82,6 +83,19 @@ class IntentClassifyResponse(BaseModel):
     intent: str
     confidence: float
     reasons: list[str]
+
+
+class RewriteRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    mode: str = Field(default="simple")
+
+
+class SimulateRequest(BaseModel):
+    plan: dict
+
+
+class ToolSuggestRequest(BaseModel):
+    message: str = Field(..., min_length=1)
 
 
 @dataclass
@@ -338,13 +352,25 @@ def chat(request: ChatRequest) -> ChatResponse:
     if not user_text:
         raise HTTPException(status_code=400, detail="message cannot be empty")
 
+    user_prefs = advanced.update_user_preferences(sid, user_text)
+    if user_prefs:
+        for key, value in user_prefs.items():
+            if key not in {"updated_at"}:
+                state.profile[key] = str(value)
+
     runtime.update_profile_from_user_text(user_text, state.profile)
     in_domain = runtime.is_in_domain_query(user_text)
     intent = intent_classifier.classify_intent(user_text)
+    skill = advanced.detect_skill(user_text)
+    tone = advanced.infer_tone(user_text, state.profile, intent)
 
     direct = runtime.maybe_rule_reply(user_text, state.profile)
     verifier_issues: list[str] = []
     corrected_by_verifier = False
+
+    clarification = advanced.clarification_prompt(user_text)
+    if not direct and clarification and intent.get("intent") in {"unknown", "technical_question"}:
+        direct = clarification
 
     # Route explicit automation asks toward workflow planning guidance.
     if not direct and intent["intent"] == "automation_request":
@@ -411,6 +437,11 @@ def chat(request: ChatRequest) -> ChatResponse:
             answer = runtime.fallback_reply(user_text)
             corrected_by_verifier = True
 
+    answer = advanced.apply_tone(answer, tone)
+    compliance = advanced.compliance_check(answer, in_domain=in_domain)
+    if not compliance.get("ok", True):
+        answer = runtime.fallback_reply(user_text)
+
     state.history.append(("Utilisateur", user_text))
     state.history.append(("Assistant", answer))
     state.user_turn_count += 1
@@ -431,12 +462,40 @@ def chat(request: ChatRequest) -> ChatResponse:
             "assistant_text": answer,
             "in_domain": in_domain,
             "intent": intent,
+            "skill": skill,
+            "tone": tone,
             "used_rule_reply": bool(direct),
             "is_low_quality": runtime.is_low_quality_answer(answer),
             "verifier_issues": verifier_issues,
             "corrected_by_verifier": corrected_by_verifier,
+            "compliance": compliance,
             "summary": state.summary,
             "profile": dict(state.profile),
+        }
+    )
+
+    advanced.update_performance_metrics(
+        {
+            "in_domain": in_domain,
+            "intent": intent,
+            "used_rule_reply": bool(direct),
+            "corrected_by_verifier": corrected_by_verifier,
+        }
+    )
+
+    advanced.write_audit(
+        {
+            "session_id": sid,
+            "user_text": user_text,
+            "assistant_text": answer,
+            "intent": intent,
+            "skill": skill,
+            "tone": tone,
+            "metacognition": advanced.build_metacognition(
+                user_text=user_text,
+                intent=intent,
+                selected_sources=[x.get("source", "") for x in _kb.search(user_text, top_k=DEFAULT_KNOWLEDGE_TOP_K)],
+            ),
         }
     )
 
@@ -512,3 +571,37 @@ def classify_intent(request: IntentClassifyRequest) -> IntentClassifyResponse:
         confidence=float(result["confidence"]),
         reasons=list(result["reasons"]),
     )
+
+
+@app.post("/rewrite")
+def rewrite_text(request: RewriteRequest) -> dict:
+    rewritten = advanced.rewrite_text(request.text, request.mode)
+    return {"mode": request.mode, "original": request.text, "rewritten": rewritten}
+
+
+@app.post("/simulate")
+def simulate_plan(request: SimulateRequest) -> dict:
+    return advanced.simulate_workflow(request.plan)
+
+
+@app.post("/tools/suggest")
+def suggest_tools(request: ToolSuggestRequest) -> dict:
+    tools = advanced.tool_suggestions(request.message)
+    return {"message": request.message, "tools": tools}
+
+
+@app.get("/audit/recent")
+def recent_audit(limit: int = 20) -> dict:
+    items = advanced.read_recent_audit(limit=max(1, min(limit, 200)))
+    return {"count": len(items), "items": items}
+
+
+@app.get("/metrics/performance")
+def performance_metrics() -> dict:
+    return advanced.get_performance_metrics()
+
+
+@app.get("/user/{session_id}/preferences")
+def user_preferences(session_id: str) -> dict:
+    prefs = advanced.get_user_preferences(session_id)
+    return {"session_id": session_id, "preferences": prefs}
