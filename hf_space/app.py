@@ -474,24 +474,21 @@ APP_CSS = """
     border-radius: 14px;
     background: #f6fbf8;
     padding: 10px;
+    display: block !important;
 }
 """
 
 
 with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
     with gr.Column(elem_classes=["app-shell"]):
-        gr.Markdown(
-            """
-            <div class="hero-title"><h1>Elibot</h1></div>
-            <div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>
-            """
-        )
+        gr.HTML('<div class="hero-title"><h1>Elibot</h1></div><div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>')
+        gr.Markdown("UI version: tasks-panel-v2")
 
         state = gr.State([])
         tasks_state = gr.State([])
 
-        with gr.Row():
-            with gr.Column(scale=3):
+        with gr.Row(equal_height=True):
+            with gr.Column(scale=3, min_width=620):
                 chatbot = gr.Chatbot(
                     label="Conversation",
                     height=430,
@@ -516,7 +513,7 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
                     send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
                     clear = gr.Button("Reinitialiser", elem_id="reset-btn")
 
-            with gr.Column(scale=2, elem_classes=["task-card"]):
+            with gr.Column(scale=2, min_width=320, elem_classes=["task-card"], visible=True):
                 gr.Markdown("### Taches")
                 task_title = gr.Textbox(label="Nouvelle tache", placeholder="Ex: Preparer pipeline")
                 task_steps = gr.Textbox(label="Etapes (virgules)", placeholder="collecte, nettoyage, entrainement")
