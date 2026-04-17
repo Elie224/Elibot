@@ -2,6 +2,8 @@ param(
     [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot",
     [string]$PythonPath = "C:\Users\KOURO\Desktop\chatbot\.venv_gpu\Scripts\python.exe",
     [string]$RunnerScript = "weekly_train_runner_fr.py",
+    [ValidateSet("balanced", "strict")]
+    [string]$VisionProfile = "strict",
     [switch]$DryRun,
     [string[]]$ExtraRunnerArgs = @()
 )
@@ -55,6 +57,7 @@ $lockPayload | Set-Content -Path $lockFile -Encoding utf8
 "[$(Get-Date -Format o)] START weekly training run" | Out-File -FilePath $logFile -Encoding utf8
 "Python: $PythonPath" | Out-File -FilePath $logFile -Append -Encoding utf8
 "Project: $ProjectRoot" | Out-File -FilePath $logFile -Append -Encoding utf8
+"VisionProfile: $VisionProfile" | Out-File -FilePath $logFile -Append -Encoding utf8
 
 if (-not (Test-Path (Join-Path $ProjectRoot $RunnerScript))) {
     "[$(Get-Date -Format o)] ERROR: runner script not found: $RunnerScript" | Out-File -FilePath $logFile -Append -Encoding utf8
@@ -65,6 +68,7 @@ if (-not (Test-Path (Join-Path $ProjectRoot $RunnerScript))) {
 $arguments = @(
     $RunnerScript,
     "--python-exec", $PythonPath,
+    "--vision-profile", $VisionProfile,
     "--run-report", "reports/weekly_train_runner_report.json",
     "--feeding-report", "reports/feeding_pipeline_report.json",
     "--eval-out-json", "reports/eval_weekly_latest.json",

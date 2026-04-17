@@ -3,6 +3,8 @@ param(
     [string]$Day = "SUN",
     [string]$Time = "03:00",
     [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot",
+    [ValidateSet("balanced", "strict")]
+    [string]$VisionProfile = "strict",
     [switch]$RunAsSystem
 )
 
@@ -13,9 +15,9 @@ if (-not (Test-Path $runScript)) {
     throw "Run script not found at: $runScript"
 }
 
-$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $runScript
+$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -VisionProfile {1}' -f $runScript, $VisionProfile
 
-cmd.exe /c "schtasks /Delete /TN \"$TaskName\" /F >nul 2>&1" | Out-Null
+cmd.exe /c ('schtasks /Delete /TN "{0}" /F >nul 2>&1' -f $TaskName) | Out-Null
 
 if ($RunAsSystem) {
     schtasks /Create `
@@ -41,4 +43,5 @@ else {
 Write-Output "REGISTERED:$TaskName"
 Write-Output "SCHEDULE: Weekly on $Day at $Time"
 Write-Output "COMMAND: $taskCommand"
+Write-Output "VISION_PROFILE: $VisionProfile"
 Write-Output "RUN_AS_SYSTEM: $($RunAsSystem.IsPresent)"

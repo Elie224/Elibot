@@ -28,7 +28,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-response-chars", type=int, default=40)
     parser.add_argument("--min-quality-score", type=float, default=0.65)
     parser.add_argument("--max-feedback-rows", type=int, default=30000)
+    parser.add_argument("--core-datasets", nargs="*", default=["data/processed/chatbot_train_fr_core_intelligence.csv"])
+    parser.add_argument("--signature-datasets", nargs="*", default=["data/processed/chatbot_train_fr_signature_v2_domain.csv"])
+    parser.add_argument("--agent-datasets", nargs="*", default=["data/processed/chatbot_train_fr_agent_actions_tools.csv"])
+    parser.add_argument(
+        "--memory-datasets",
+        nargs="*",
+        default=[
+            "data/processed/chatbot_train_fr_memory_context_summary.csv",
+            "data/processed/chatbot_train_fr_memory_synth.csv",
+            "data/processed/chatbot_train_fr_memory_city_focus.csv",
+        ],
+    )
+    parser.add_argument("--bundle-target-rows", type=int, default=10000)
+    parser.add_argument("--vision-profile", choices=["balanced", "strict"], default="balanced")
+    parser.add_argument("--ratio-core", type=float, default=0.40)
+    parser.add_argument("--ratio-signature", type=float, default=0.30)
+    parser.add_argument("--ratio-agent", type=float, default=0.20)
+    parser.add_argument("--ratio-memory", type=float, default=0.10)
+    parser.add_argument("--strict-domain", action="store_true")
+    parser.add_argument("--max-core-rows", type=int, default=15000)
     parser.add_argument("--max-signature-rows", type=int, default=15000)
+    parser.add_argument("--max-agent-rows", type=int, default=12000)
+    parser.add_argument("--max-memory-rows", type=int, default=10000)
+    parser.add_argument("--dedupe-bundle", action="store_true")
 
     # Step 2: training
     parser.add_argument("--base-model", default="models/chatbot-fr-flan-t5-small-v2-signature")
@@ -89,6 +112,19 @@ def _run_command(cmd: list[str], dry_run: bool) -> dict[str, Any]:
 def main() -> None:
     args = parse_args()
 
+    ratio_core = args.ratio_core
+    ratio_signature = args.ratio_signature
+    ratio_agent = args.ratio_agent
+    ratio_memory = args.ratio_memory
+    strict_domain = bool(args.strict_domain)
+
+    if args.vision_profile == "strict":
+        ratio_core = 0.35
+        ratio_signature = 0.35
+        ratio_agent = 0.20
+        ratio_memory = 0.10
+        strict_domain = True
+
     run_started = _now_iso()
     report: dict[str, Any] = {
         "started_at": run_started,
@@ -118,11 +154,39 @@ def main() -> None:
         str(args.min_quality_score),
         "--max-feedback-rows",
         str(args.max_feedback_rows),
+        "--core-datasets",
+        *args.core_datasets,
+        "--signature-datasets",
+        *args.signature_datasets,
+        "--agent-datasets",
+        *args.agent_datasets,
+        "--memory-datasets",
+        *args.memory_datasets,
+        "--bundle-target-rows",
+        str(args.bundle_target_rows),
+        "--ratio-core",
+        str(ratio_core),
+        "--ratio-signature",
+        str(ratio_signature),
+        "--ratio-agent",
+        str(ratio_agent),
+        "--ratio-memory",
+        str(ratio_memory),
+        "--max-core-rows",
+        str(args.max_core_rows),
         "--max-signature-rows",
         str(args.max_signature_rows),
+        "--max-agent-rows",
+        str(args.max_agent_rows),
+        "--max-memory-rows",
+        str(args.max_memory_rows),
         "--seed",
         str(args.pipeline_seed),
     ]
+    if args.dedupe_bundle:
+        step1.append("--dedupe-bundle")
+    if strict_domain:
+        step1.append("--strict-domain")
     if args.allow_empty:
         step1.append("--allow-empty")
 

@@ -2,7 +2,9 @@ param(
     [string]$TaskName = "Elibot Weekly Training",
     [string]$Day = "SUN",
     [string]$Time = "03:00",
-    [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot"
+    [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot",
+    [ValidateSet("balanced", "strict")]
+    [string]$VisionProfile = "strict"
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +25,7 @@ if (-not (Test-IsAdmin)) {
         "-Day", $Day,
         "-Time", $Time,
         "-ProjectRoot", ('"{0}"' -f $ProjectRoot)
+        "-VisionProfile", $VisionProfile
     )
 
     Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs
@@ -35,9 +38,9 @@ if (-not (Test-Path $runScript)) {
     throw "Run script not found at: $runScript"
 }
 
-$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $runScript
+$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -VisionProfile {1}' -f $runScript, $VisionProfile
 
-cmd.exe /c "schtasks /Delete /TN \"$TaskName\" /F >nul 2>&1" | Out-Null
+cmd.exe /c ('schtasks /Delete /TN "{0}" /F >nul 2>&1' -f $TaskName) | Out-Null
 
 schtasks /Create `
     /SC WEEKLY `
@@ -52,4 +55,5 @@ schtasks /Create `
 Write-Output "REGISTERED:$TaskName"
 Write-Output "SCHEDULE: Weekly on $Day at $Time"
 Write-Output "RUN_AS: SYSTEM"
+Write-Output "VISION_PROFILE: $VisionProfile"
 Write-Output "COMMAND: $taskCommand"

@@ -11,6 +11,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chat-log", default="data/logs/elibot_chat_events.jsonl")
     parser.add_argument("--audit-log", default="data/logs/elibot_audit.jsonl")
     parser.add_argument("--signature-dataset", default="data/processed/chatbot_train_fr_signature_v2_domain.csv")
+    parser.add_argument("--signature-datasets", nargs="*", default=[])
+    parser.add_argument("--core-datasets", nargs="*", default=[])
+    parser.add_argument("--agent-datasets", nargs="*", default=[])
+    parser.add_argument("--memory-datasets", nargs="*", default=[])
     parser.add_argument("--out-feedback", default="data/processed/chatbot_train_fr_feedback_weekly.csv")
     parser.add_argument("--out-bundle", default="data/processed/chatbot_train_fr_weekly_bundle.csv")
     parser.add_argument("--out-report", default="reports/feeding_pipeline_report.json")
@@ -18,6 +22,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-quality-score", type=float, default=0.65)
     parser.add_argument("--max-feedback-rows", type=int, default=30000)
     parser.add_argument("--max-signature-rows", type=int, default=15000)
+    parser.add_argument("--max-core-rows", type=int, default=15000)
+    parser.add_argument("--max-agent-rows", type=int, default=12000)
+    parser.add_argument("--max-memory-rows", type=int, default=10000)
+    parser.add_argument("--bundle-target-rows", type=int, default=10000)
+    parser.add_argument("--ratio-core", type=float, default=0.40)
+    parser.add_argument("--ratio-signature", type=float, default=0.30)
+    parser.add_argument("--ratio-agent", type=float, default=0.20)
+    parser.add_argument("--ratio-memory", type=float, default=0.10)
+    parser.add_argument(
+        "--strict-domain",
+        action="store_true",
+        help="Filter core/signature/agent rows to keep only technical in-domain examples",
+    )
+    parser.add_argument(
+        "--domain-keywords",
+        nargs="*",
+        default=[
+            "ia",
+            "ml",
+            "machine learning",
+            "python",
+            "sql",
+            "api",
+            "workflow",
+            "automatisation",
+            "pipeline",
+            "dataset",
+            "debug",
+            "classification",
+            "planification",
+        ],
+    )
+    parser.add_argument(
+        "--dedupe-bundle",
+        action="store_true",
+        help="Deduplicate final bundle by instruction/response pair",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow-empty", action="store_true")
     return parser.parse_args()
@@ -166,12 +207,119 @@ def _sample_rows(rows: list[dict[str, str]], max_rows: int, seed: int) -> list[d
     return picked
 
 
+def _normalize_source_name(path: Path) -> str:
+    stem = path.stem.strip().lower()
+    return stem or "extra_dataset"
+
+
+def _prepare_dataset_rows(rows: list[dict[str, str]], source_name: str) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for r in rows:
+        instruction = (r.get("instruction") or "").strip()
+        response = (r.get("response") or "").strip()
+        history = (r.get("history") or "").strip()
+        source = (r.get("source") or source_name).strip() or source_name
+
+        if not instruction or not response:
+            continue
+
+        out.append(
+            {
+                "instruction": instruction,
+                "response": response,
+                "history": history,
+                "source": source,
+            }
+        )
+    return out
+
+
+def _dedupe_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for r in rows:
+        key = (r["instruction"].lower(), r["response"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+
+    return out
+
+
+def _read_group_rows(paths: list[str], max_rows_per_file: int, seed: int) -> tuple[list[dict[str, str]], dict[str, int]]:
+    all_rows: list[dict[str, str]] = []
+    per_source: dict[str, int] = {}
+
+    for p in paths:
+        path = Path(p)
+        if not path.exists():
+            continue
+
+        source_name = _normalize_source_name(path)
+        rows = _prepare_dataset_rows(_read_csv_rows(path), source_name=source_name)
+        rows = _sample_rows(rows, max_rows=max(1, max_rows_per_file), seed=seed)
+
+        all_rows.extend(rows)
+        per_source[source_name] = len(rows)
+
+    return all_rows, per_source
+
+
+def _compute_targets(total_rows: int, ratio_core: float, ratio_signature: float, ratio_agent: float, ratio_memory: float) -> dict[str, int]:
+    ratios = {
+        "core": max(0.0, ratio_core),
+        "signature": max(0.0, ratio_signature),
+        "agent": max(0.0, ratio_agent),
+        "memory": max(0.0, ratio_memory),
+    }
+
+    ratio_sum = sum(ratios.values())
+    if ratio_sum <= 0.0:
+        ratios = {"core": 0.40, "signature": 0.30, "agent": 0.20, "memory": 0.10}
+        ratio_sum = 1.0
+
+    normalized = {k: v / ratio_sum for k, v in ratios.items()}
+    targets = {k: int(total_rows * normalized[k]) for k in normalized}
+
+    # Distribute rounding remainder deterministically.
+    remainder = total_rows - sum(targets.values())
+    for key in ["core", "signature", "agent", "memory"]:
+        if remainder <= 0:
+            break
+        targets[key] += 1
+        remainder -= 1
+
+    return targets
+
+
+def _is_domain_row(row: dict[str, str], keywords: list[str]) -> bool:
+    text = " ".join(
+        [
+            row.get("instruction", ""),
+            row.get("response", ""),
+            row.get("history", ""),
+            row.get("source", ""),
+        ]
+    ).lower()
+    return any(k.strip().lower() in text for k in keywords if k.strip())
+
+
+def _filter_domain_rows(rows: list[dict[str, str]], keywords: list[str]) -> tuple[list[dict[str, str]], int]:
+    if not keywords:
+        return rows, 0
+
+    kept = [r for r in rows if _is_domain_row(r, keywords)]
+    removed = len(rows) - len(kept)
+    return kept, removed
+
+
 def main() -> None:
     args = parse_args()
 
     chat_log_path = Path(args.chat_log)
     audit_log_path = Path(args.audit_log)
-    signature_path = Path(args.signature_dataset)
     out_feedback_path = Path(args.out_feedback)
     out_bundle_path = Path(args.out_bundle)
     out_report_path = Path(args.out_report)
@@ -188,20 +336,39 @@ def main() -> None:
     feedback_rows = _sample_rows(feedback_rows, max_rows=max(1, args.max_feedback_rows), seed=args.seed)
     _write_csv(out_feedback_path, feedback_rows)
 
-    signature_rows = _read_csv_rows(signature_path)
-    signature_rows = [
-        {
-            "instruction": (r.get("instruction") or "").strip(),
-            "response": (r.get("response") or "").strip(),
-            "history": (r.get("history") or "").strip(),
-            "source": (r.get("source") or "signature").strip() or "signature",
-        }
-        for r in signature_rows
-        if (r.get("instruction") or "").strip() and (r.get("response") or "").strip()
-    ]
-    signature_rows = _sample_rows(signature_rows, max_rows=max(1, args.max_signature_rows), seed=args.seed)
+    signature_paths = list(args.signature_datasets)
+    if args.signature_dataset:
+        signature_paths.append(args.signature_dataset)
+    # Keep insertion order while removing duplicates.
+    signature_paths = list(dict.fromkeys(signature_paths))
 
-    bundle_rows = signature_rows + feedback_rows
+    core_rows, core_sources = _read_group_rows(paths=args.core_datasets, max_rows_per_file=args.max_core_rows, seed=args.seed)
+    signature_rows, signature_sources = _read_group_rows(paths=signature_paths, max_rows_per_file=args.max_signature_rows, seed=args.seed)
+    agent_rows, agent_sources = _read_group_rows(paths=args.agent_datasets, max_rows_per_file=args.max_agent_rows, seed=args.seed)
+    memory_rows, memory_sources = _read_group_rows(paths=args.memory_datasets, max_rows_per_file=args.max_memory_rows, seed=args.seed)
+
+    domain_filter_removed = {"core": 0, "signature": 0, "agent": 0}
+    if args.strict_domain:
+        core_rows, domain_filter_removed["core"] = _filter_domain_rows(core_rows, args.domain_keywords)
+        signature_rows, domain_filter_removed["signature"] = _filter_domain_rows(signature_rows, args.domain_keywords)
+        agent_rows, domain_filter_removed["agent"] = _filter_domain_rows(agent_rows, args.domain_keywords)
+
+    targets = _compute_targets(
+        total_rows=max(1, args.bundle_target_rows),
+        ratio_core=args.ratio_core,
+        ratio_signature=args.ratio_signature,
+        ratio_agent=args.ratio_agent,
+        ratio_memory=args.ratio_memory,
+    )
+
+    selected_core = _sample_rows(core_rows, max_rows=targets["core"], seed=args.seed)
+    selected_signature = _sample_rows(signature_rows, max_rows=targets["signature"], seed=args.seed)
+    selected_agent = _sample_rows(agent_rows, max_rows=targets["agent"], seed=args.seed)
+    selected_memory = _sample_rows(memory_rows, max_rows=targets["memory"], seed=args.seed)
+
+    bundle_rows = selected_core + selected_signature + selected_agent + selected_memory + feedback_rows
+    if args.dedupe_bundle:
+        bundle_rows = _dedupe_rows(bundle_rows)
 
     # Keep deterministic ordering with signature first then feedback.
     _write_csv(out_bundle_path, bundle_rows)
@@ -213,7 +380,10 @@ def main() -> None:
         "inputs": {
             "chat_log": str(chat_log_path),
             "audit_log": str(audit_log_path),
-            "signature_dataset": str(signature_path),
+            "core_datasets": list(args.core_datasets),
+            "signature_datasets": signature_paths,
+            "agent_datasets": list(args.agent_datasets),
+            "memory_datasets": list(args.memory_datasets),
         },
         "outputs": {
             "feedback_dataset": str(out_feedback_path),
@@ -223,15 +393,40 @@ def main() -> None:
             "chat_events": len(events),
             "audit_events": len(audits),
             "feedback_rows": len(feedback_rows),
-            "signature_rows": len(signature_rows),
+            "core_rows": len(selected_core),
+            "signature_rows": len(selected_signature),
+            "agent_rows": len(selected_agent),
+            "memory_rows": len(selected_memory),
             "bundle_rows": len(bundle_rows),
         },
+        "sources": {
+            "core": core_sources,
+            "signature": signature_sources,
+            "agent": agent_sources,
+            "memory": memory_sources,
+        },
+        "targets": targets,
         "feedback_filter_stats": feedback_stats,
+        "domain_filter": {
+            "strict_domain": bool(args.strict_domain),
+            "keywords": list(args.domain_keywords),
+            "removed_rows": domain_filter_removed,
+        },
         "policy": {
             "min_response_chars": args.min_response_chars,
             "min_quality_score": args.min_quality_score,
             "max_feedback_rows": args.max_feedback_rows,
+            "max_core_rows": args.max_core_rows,
             "max_signature_rows": args.max_signature_rows,
+            "max_agent_rows": args.max_agent_rows,
+            "max_memory_rows": args.max_memory_rows,
+            "bundle_target_rows": args.bundle_target_rows,
+            "ratio_core": args.ratio_core,
+            "ratio_signature": args.ratio_signature,
+            "ratio_agent": args.ratio_agent,
+            "ratio_memory": args.ratio_memory,
+            "strict_domain": bool(args.strict_domain),
+            "dedupe_bundle": bool(args.dedupe_bundle),
         },
         "training_hint": {
             "weekly": "Fine-tune with weekly_bundle (LoRA/light).",
