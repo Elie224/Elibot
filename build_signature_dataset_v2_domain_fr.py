@@ -1,6 +1,7 @@
 import argparse
 import csv
 import random
+import re
 from pathlib import Path
 
 
@@ -28,10 +29,14 @@ OUT_DOMAIN_PROMPTS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Elibot v2 signature dataset focused on data/AI/automation")
-    parser.add_argument("--rows", type=int, default=10000)
+    parser.add_argument("--rows", type=int, default=132000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-file", default="data/processed/chatbot_train_fr_signature_v2_domain.csv")
     return parser.parse_args()
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
 def _make_technical_pair(topic: str) -> tuple[str, str]:
@@ -94,12 +99,15 @@ def _build_history(topic: str) -> str:
 def make_rows(n: int, seed: int) -> list[dict]:
     random.seed(seed)
     rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
 
     generators = ["technical", "debug", "clarify", "reframe"]
+    tones = ["professionnel", "concis", "structure"]
 
-    while len(rows) < n:
+    for case_id in range(1, n + 1):
         kind = random.choice(generators)
         topic = random.choice(TECH_TOPICS)
+        tone = random.choice(tones)
 
         if kind == "technical":
             instruction, response = _make_technical_pair(topic)
@@ -109,6 +117,17 @@ def make_rows(n: int, seed: int) -> list[dict]:
             instruction, response = _make_clarification_pair(topic)
         else:
             instruction, response = _make_reframe_pair(random.choice(OUT_DOMAIN_PROMPTS))
+
+        instruction = f"Cas {case_id} [{tone}] {instruction}"
+        response = f"Ton: {tone}. {response}"
+
+        if len(instruction) < 20 or len(response) < 40:
+            continue
+
+        key = (_norm(instruction), _norm(response))
+        if key in seen:
+            continue
+        seen.add(key)
 
         rows.append(
             {

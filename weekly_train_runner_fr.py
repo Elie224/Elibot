@@ -40,24 +40,24 @@ def parse_args() -> argparse.Namespace:
             "data/processed/chatbot_train_fr_memory_city_focus.csv",
         ],
     )
-    parser.add_argument("--bundle-target-rows", type=int, default=10000)
+    parser.add_argument("--bundle-target-rows", type=int, default=82500)
     parser.add_argument("--vision-profile", choices=["balanced", "strict"], default="balanced")
     parser.add_argument("--ratio-core", type=float, default=0.40)
     parser.add_argument("--ratio-signature", type=float, default=0.30)
     parser.add_argument("--ratio-agent", type=float, default=0.20)
     parser.add_argument("--ratio-memory", type=float, default=0.10)
     parser.add_argument("--strict-domain", action="store_true")
-    parser.add_argument("--max-core-rows", type=int, default=15000)
-    parser.add_argument("--max-signature-rows", type=int, default=15000)
-    parser.add_argument("--max-agent-rows", type=int, default=12000)
-    parser.add_argument("--max-memory-rows", type=int, default=10000)
+    parser.add_argument("--max-core-rows", type=int, default=198000)
+    parser.add_argument("--max-signature-rows", type=int, default=99000)
+    parser.add_argument("--max-agent-rows", type=int, default=99000)
+    parser.add_argument("--max-memory-rows", type=int, default=66000)
     parser.add_argument("--dedupe-bundle", action="store_true")
 
     # Step 2: training
     parser.add_argument("--base-model", default="models/chatbot-fr-flan-t5-small-v2-signature")
     parser.add_argument("--output-model", default="models/chatbot-fr-flan-t5-small-weekly")
-    parser.add_argument("--train-max-samples", type=int, default=20000)
-    parser.add_argument("--train-max-eval-samples", type=int, default=1200)
+    parser.add_argument("--train-max-samples", type=int, default=115500)
+    parser.add_argument("--train-max-eval-samples", type=int, default=8250)
     parser.add_argument("--train-epochs", type=float, default=0.8)
     parser.add_argument("--train-batch-size", type=int, default=8)
     parser.add_argument("--train-grad-accum", type=int, default=2)
@@ -95,16 +95,31 @@ def _run_command(cmd: list[str], dry_run: bool) -> dict[str, Any]:
         }
 
     started = time.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"[runner] START: {cmd_display}", flush=True)
+    try:
+        # Stream child output directly to console so long steps remain visible.
+        proc = subprocess.run(cmd, text=True)
+    except KeyboardInterrupt:
+        duration = time.time() - started
+        return {
+            "command": cmd,
+            "command_display": cmd_display,
+            "ok": False,
+            "returncode": 130,
+            "stdout": "",
+            "stderr": "Interrupted by user (KeyboardInterrupt)",
+            "duration_s": round(duration, 3),
+        }
     duration = time.time() - started
+    print(f"[runner] END: rc={proc.returncode} in {round(duration, 3)}s", flush=True)
 
     return {
         "command": cmd,
         "command_display": cmd_display,
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
-        "stdout": proc.stdout[-8000:],
-        "stderr": proc.stderr[-8000:],
+        "stdout": "[streamed to console]",
+        "stderr": "",
         "duration_s": round(duration, 3),
     }
 
@@ -183,8 +198,7 @@ def main() -> None:
         "--seed",
         str(args.pipeline_seed),
     ]
-    if args.dedupe_bundle:
-        step1.append("--dedupe-bundle")
+    step1.append("--dedupe-bundle")
     if strict_domain:
         step1.append("--strict-domain")
     if args.allow_empty:

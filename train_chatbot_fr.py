@@ -16,6 +16,19 @@ from transformers import (
 )
 
 
+FORBIDDEN_DATASET_PATH_HINTS = [
+    "chatbot_train_fr.csv",
+    "chatbot_pairs_fr.csv",
+    "chatbot_pairs_en.csv",
+]
+
+FORBIDDEN_SOURCE_HINTS = [
+    "cornell_movie_dialogs",
+    "dialog_csv",
+    "movie",
+]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a French chatbot model from CSV pairs")
     parser.add_argument("--data-file", default="data/processed/chatbot_train_fr.csv")
@@ -96,10 +109,28 @@ def main() -> None:
     if not os.path.exists(args.data_file):
         raise FileNotFoundError(f"Missing dataset file: {args.data_file}")
 
+    normalized_path = args.data_file.replace("\\", "/").lower()
+    if any(hint in normalized_path for hint in FORBIDDEN_DATASET_PATH_HINTS):
+        raise ValueError(
+            "Forbidden dataset for training: movie/dialogue legacy corpus is disabled. "
+            f"Use a specialized bundle instead of '{args.data_file}'."
+        )
+
     dataset = load_dataset("csv", data_files={"train": args.data_file})["train"]
     dataset = dataset.filter(
         lambda x: bool((x.get("instruction") or "").strip()) and bool((x.get("response") or "").strip())
     )
+
+    if "source" in dataset.column_names:
+        sample_size = min(2000, len(dataset))
+        source_values = dataset.select(range(sample_size))["source"]
+        for source in source_values:
+            src = str(source or "").lower()
+            if any(h in src for h in FORBIDDEN_SOURCE_HINTS):
+                raise ValueError(
+                    "Forbidden source detected in dataset (movie/dialogue legacy). "
+                    f"Found source='{source}'."
+                )
 
     split = dataset.train_test_split(test_size=args.eval_ratio, seed=args.seed)
     train_ds = split["train"]

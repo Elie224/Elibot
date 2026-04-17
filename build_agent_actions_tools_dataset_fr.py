@@ -1,6 +1,7 @@
 import argparse
 import csv
 import random
+import re
 from pathlib import Path
 
 ACTIONS = [
@@ -12,6 +13,9 @@ ACTIONS = [
     "update_task",
     "schedule_job",
     "notify_slack",
+    "build_dashboard",
+    "run_ab_test",
+    "create_incident",
 ]
 
 
@@ -24,15 +28,22 @@ SCENARIOS = [
     ("Passe la tache en termine", "update_task", {"task_id": "task-001", "status": "done"}),
     ("Planifie un job hebdomadaire dimanche 03:00", "schedule_job", {"cron": "0 3 * * SUN", "job": "weekly_train_runner"}),
     ("Alerte Slack quand le train est termine", "notify_slack", {"channel": "#ml-ops", "message": "Entrainement termine avec succes."}),
+    ("Cree un dashboard KPI hebdomadaire", "build_dashboard", {"tool": "superset", "metrics": ["accuracy", "latency", "error_rate"]}),
+    ("Lance un A/B test sur deux prompts systeme", "run_ab_test", {"variant_a": "prompt_v1", "variant_b": "prompt_v2", "traffic": "50_50"}),
+    ("Ouvre un incident P1 pour downtime API", "create_incident", {"severity": "P1", "service": "chatbot-api", "owner": "oncall-ml"}),
 ]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build agent actions/tools dataset for Elibot")
-    parser.add_argument("--rows", type=int, default=4000)
+    parser.add_argument("--rows", type=int, default=148500)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-file", default="data/processed/chatbot_train_fr_agent_actions_tools.csv")
     return parser.parse_args()
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
 def _format_json(action: str, payload: dict) -> str:
@@ -50,9 +61,11 @@ def _format_json(action: str, payload: dict) -> str:
 
 def build_rows(n: int, seed: int) -> list[dict]:
     random.seed(seed)
-    rows = []
+    rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    safeguards = ["safe", "dry-run", "validated"]
 
-    for _ in range(n):
+    for case_id in range(1, n + 1):
         user_task, action, payload = random.choice(SCENARIOS)
         intent = random.choice([
             "choisir l'outil adapte",
@@ -60,14 +73,23 @@ def build_rows(n: int, seed: int) -> list[dict]:
             "planifier un workflow",
             "executer une action de maniere sure",
         ])
+        guard = random.choice(safeguards)
 
-        instruction = f"Utilisateur: {user_task}. Donne une reponse orientee agent et actionnable."
-        response = _format_json(action, payload)
+        instruction = f"Cas {case_id} [{guard}] Utilisateur: {user_task}. Donne une reponse orientee agent et actionnable."
+        response = _format_json(action, {**payload, "mode": guard, "case_id": f"case-{case_id}"})
         history = " ||| ".join([
             "Utilisateur: Tu es un agent IA technique.",
             "Assistant: Je dois repondre avec une action structuree et sure.",
             f"Utilisateur: Objectif: {intent}.",
         ])
+
+        if len(instruction) < 20 or len(response) < 20:
+            continue
+
+        key = (_norm(instruction), _norm(response))
+        if key in seen:
+            continue
+        seen.add(key)
 
         rows.append(
             {

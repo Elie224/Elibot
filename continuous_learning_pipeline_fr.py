@@ -2,8 +2,155 @@ import argparse
 import csv
 import json
 import random
+import re
 from pathlib import Path
 from typing import Any
+
+
+GENERALIST_BANNED_KEYWORDS = [
+    "salut",
+    "ca va",
+    "ça va",
+    "blague",
+    "humour",
+    "roleplay",
+    "jeu de role",
+    "opinion perso",
+    "vie quotidienne",
+    "emotion",
+    "émotion",
+]
+
+OFF_DOMAIN_BANNED_KEYWORDS = [
+    "politique",
+    "religion",
+    "psychologie",
+    "sante",
+    "santé",
+    "relation amoureuse",
+    "astrologie",
+    "sport",
+    "people",
+    "divertissement",
+]
+
+TOXIC_BANNED_KEYWORDS = [
+    "insulte",
+    "haine",
+    "raciste",
+    "sexiste",
+    "violent",
+    "violence",
+    "agression",
+]
+
+TOXIC_NEGATION_HINTS = [
+    "sans",
+    "eviter",
+    "éviter",
+    "interdit",
+    "refuser",
+    "ne pas",
+    "pas de",
+]
+
+SMS_BANNED_PATTERNS = [
+    r"\bmdr\b",
+    r"\blol\b",
+    r"\bpk\b",
+    r"\bstp\b",
+    r"\bsvp\b",
+    r"\bjtm\b",
+]
+
+LANGUAGE_NOISE_PATTERNS = [
+    r"\bslt\b",
+    r"\bbjr\b",
+    r"\bcv\b",
+    r"\bpkoi\b",
+    r"\btt\b",
+    r"\bdsl\b",
+    r"\btkt\b",
+    r"(.)\1{4,}",
+    r"[!?]{3,}",
+]
+
+SUBJECTIVE_PATTERNS = [
+    r"\bje pense que\b",
+    r"\ba mon avis\b",
+    r"\bà mon avis\b",
+    r"\bje ressens\b",
+    r"\bc[' ]est triste\b",
+    r"\bc[' ]est joyeux\b",
+    r"\bc[' ]est frustrant\b",
+]
+
+HESITATION_PATTERNS = [
+    r"\bje ne suis pas sur\b",
+    r"\bje ne suis pas sûr\b",
+    r"\bpeut[- ]etre\b",
+    r"\bpeut[- ]être\b",
+    r"\bje crois que\b",
+    r"\bpas certain\b",
+]
+
+LEGACY_LIMITATION_PATTERNS = [
+    r"\bje ne peux pas\b",
+    r"\bje ne peux rien executer\b",
+    r"\bje ne peux rien exécuter\b",
+    r"\bje ne peux pas executer\b",
+    r"\bje ne peux pas exécuter\b",
+    r"\bje ne peux pas envoyer\b",
+    r"\bje ne peux pas automatiser\b",
+]
+
+EXCESSIVE_APOLOGY_PATTERNS = [
+    r"\bdesole\b",
+    r"\bdésolé\b",
+    r"\bpardon\b",
+    r"\bje suis vraiment desole\b",
+    r"\bje suis vraiment désolé\b",
+]
+
+STYLE_INCONSISTENT_PATTERNS = [
+    r"\bfranchement\b",
+    r"\bcarr[ée]ment\b",
+    r"\bgrave\b",
+    r"\btruc\b",
+    r"\bgenre\b",
+    r"\bkif\b",
+    r"\bcool\b",
+    r"\bsympa\b",
+]
+
+OUTDATED_TECH_PATTERNS = [
+    r"\bpython\s*2\b",
+    r"\btensorflow\s*1\b",
+    r"\bsklearn\.cross_validation\b",
+    r"\bimp\s+module\b",
+    r"\bfrom\s+__future__\s+import\s+print_function\b",
+]
+
+HALLUCINATION_RISK_PATTERNS = [
+    r"\bapi\s+magique\b",
+    r"\boutil\s+secret\b",
+    r"\bendpoint\s+fictif\b",
+    r"\bworkflow\s+impossible\b",
+    r"\b100%\s+garanti\b",
+]
+
+LOW_SIGNAL_RESPONSES = {
+    "bien sur",
+    "bien sûr",
+    "voici",
+    "ok",
+    "d'accord",
+    "daccord",
+    "oui",
+    "non",
+}
+
+MAX_RESPONSE_CHARS = 2200
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +244,86 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _norm_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def _contains_phrase(normalized_text: str, keyword: str) -> bool:
+    phrase = _norm_text(keyword)
+    if not phrase:
+        return False
+    parts = [re.escape(p) for p in phrase.split(" ") if p]
+    if not parts:
+        return False
+    pattern = r"\b" + r"\s+".join(parts) + r"\b"
+    return bool(re.search(pattern, normalized_text))
+
+
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    normalized = _norm_text(text)
+    return any(_contains_phrase(normalized, k) for k in keywords)
+
+
+def _is_structured_response(response: str) -> bool:
+    value = response.strip()
+    if len(value) < 60:
+        return True
+    if "\n" in value:
+        return True
+    if any(marker in value for marker in ["1)", "2)", "- ", ":", ";", "{"]):
+        return True
+    sentences = re.split(r"[.!?]+", value)
+    return len([s for s in sentences if s.strip()]) >= 2
+
+
+def _has_sms_style(text: str) -> bool:
+    lowered = _norm_text(text)
+    return any(re.search(pattern, lowered) for pattern in SMS_BANNED_PATTERNS)
+
+
+def _has_language_noise(text: str) -> bool:
+    normalized = _norm_text(text)
+    if any(re.search(pattern, normalized) for pattern in LANGUAGE_NOISE_PATTERNS):
+        return True
+
+    tokens = [t for t in re.split(r"\s+", normalized) if t]
+    if len(tokens) >= 8:
+        very_short = sum(1 for t in tokens if len(t) <= 2 and t not in {"ia", "ml", "ai", "de", "du", "la", "le", "et"})
+        if very_short / len(tokens) > 0.35:
+            return True
+
+    return False
+
+
+def _matches_any_pattern(text: str, patterns: list[str]) -> bool:
+    normalized = _norm_text(text)
+    return any(re.search(p, normalized) for p in patterns)
+
+
+def _is_low_signal_response(response: str) -> bool:
+    normalized = _norm_text(response).strip(" .,!?:;\"'")
+    return normalized in LOW_SIGNAL_RESPONSES
+
+
+def _contains_toxic_content(text: str) -> bool:
+    normalized = _norm_text(text)
+    for keyword in TOXIC_BANNED_KEYWORDS:
+        if not _contains_phrase(normalized, keyword):
+            continue
+
+        m = re.search(r"\b" + re.escape(_norm_text(keyword)) + r"\b", normalized)
+        if not m:
+            continue
+        idx = m.start()
+        window_start = max(0, idx - 24)
+        window_end = min(len(normalized), idx + len(keyword) + 24)
+        window = normalized[window_start:window_end]
+        if any(hint in window for hint in TOXIC_NEGATION_HINTS):
+            continue
+        return True
+    return False
+
+
 def _heuristic_quality(event: dict[str, Any], min_response_chars: int) -> float:
     score = 0.0
     assistant_text = (event.get("assistant_text") or "").strip()
@@ -170,7 +397,7 @@ def _extract_feedback_rows(
             stats["filtered_score"] += 1
             continue
 
-        key = (user_text.lower(), assistant_text.lower())
+        key = (_norm_text(user_text), _norm_text(assistant_text))
         if key in seen:
             stats["filtered_duplicate"] += 1
             continue
@@ -239,7 +466,7 @@ def _dedupe_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[tuple[str, str]] = set()
 
     for r in rows:
-        key = (r["instruction"].lower(), r["response"].lower())
+        key = (_norm_text(r["instruction"]), _norm_text(r["response"]))
         if key in seen:
             continue
         seen.add(key)
@@ -315,6 +542,154 @@ def _filter_domain_rows(rows: list[dict[str, str]], keywords: list[str]) -> tupl
     return kept, removed
 
 
+def _drop_contradictions(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        key = _norm_text(row.get("instruction", ""))
+        grouped.setdefault(key, []).append(row)
+
+    out: list[dict[str, str]] = []
+    removed = 0
+
+    for _, group in grouped.items():
+        by_response: dict[str, list[dict[str, str]]] = {}
+        for row in group:
+            rkey = _norm_text(row.get("response", ""))
+            by_response.setdefault(rkey, []).append(row)
+
+        # Keep the dominant response variant for identical instruction keys.
+        best_key = max(by_response.keys(), key=lambda k: len(by_response[k]))
+        kept_group = by_response[best_key]
+        out.extend(kept_group)
+        removed += len(group) - len(kept_group)
+
+    return out, removed
+
+
+def _clean_rows_by_policy(rows: list[dict[str, str]], min_response_chars: int, scope: str) -> tuple[list[dict[str, str]], dict[str, int]]:
+    stats = {
+        "removed_empty": 0,
+        "removed_generalist": 0,
+        "removed_off_domain": 0,
+        "removed_toxic": 0,
+        "removed_sms_style": 0,
+        "removed_language_quality": 0,
+        "removed_subjective": 0,
+        "removed_hesitation": 0,
+        "removed_legacy_limitations": 0,
+        "removed_excessive_apology": 0,
+        "removed_style_inconsistent": 0,
+        "removed_obsolete": 0,
+        "removed_hallucination_risk": 0,
+        "removed_low_signal": 0,
+        "removed_too_short": 0,
+        "removed_too_long": 0,
+        "removed_unstructured": 0,
+        "removed_duplicate": 0,
+        "removed_contradiction": 0,
+    }
+
+    cleaned: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for row in rows:
+        instruction = (row.get("instruction") or "").strip()
+        response = (row.get("response") or "").strip()
+        history = (row.get("history") or "").strip()
+        joint = f"{instruction} {response} {history}"
+        topical_text = f"{instruction} {history}"
+
+        if not instruction or not response:
+            stats["removed_empty"] += 1
+            continue
+
+        if _contains_any(topical_text, GENERALIST_BANNED_KEYWORDS):
+            stats["removed_generalist"] += 1
+            continue
+
+        if _contains_any(topical_text, OFF_DOMAIN_BANNED_KEYWORDS):
+            stats["removed_off_domain"] += 1
+            continue
+
+        # Toxicity is evaluated on user/problem context to avoid dropping
+        # safe policy responses that mention prohibited terms.
+        if _contains_toxic_content(topical_text):
+            stats["removed_toxic"] += 1
+            continue
+
+        if _has_sms_style(joint):
+            stats["removed_sms_style"] += 1
+            continue
+
+        if _has_language_noise(f"{instruction} {history}"):
+            stats["removed_language_quality"] += 1
+            continue
+
+        if _matches_any_pattern(response, SUBJECTIVE_PATTERNS):
+            stats["removed_subjective"] += 1
+            continue
+
+        if _matches_any_pattern(response, HESITATION_PATTERNS):
+            stats["removed_hesitation"] += 1
+            continue
+
+        if _matches_any_pattern(response, LEGACY_LIMITATION_PATTERNS):
+            stats["removed_legacy_limitations"] += 1
+            continue
+
+        if _matches_any_pattern(response, EXCESSIVE_APOLOGY_PATTERNS):
+            stats["removed_excessive_apology"] += 1
+            continue
+
+        if _matches_any_pattern(response, STYLE_INCONSISTENT_PATTERNS):
+            stats["removed_style_inconsistent"] += 1
+            continue
+
+        if _matches_any_pattern(joint, OUTDATED_TECH_PATTERNS):
+            stats["removed_obsolete"] += 1
+            continue
+
+        if _matches_any_pattern(joint, HALLUCINATION_RISK_PATTERNS):
+            stats["removed_hallucination_risk"] += 1
+            continue
+
+        if _is_low_signal_response(response):
+            stats["removed_low_signal"] += 1
+            continue
+
+        if len(response) < min_response_chars:
+            stats["removed_too_short"] += 1
+            continue
+
+        if len(response) > MAX_RESPONSE_CHARS:
+            stats["removed_too_long"] += 1
+            continue
+
+        if not _is_structured_response(response):
+            stats["removed_unstructured"] += 1
+            continue
+
+        key = (_norm_text(instruction), _norm_text(response))
+        if key in seen:
+            stats["removed_duplicate"] += 1
+            continue
+        seen.add(key)
+
+        cleaned.append(
+            {
+                "instruction": instruction,
+                "response": response,
+                "history": history,
+                "source": (row.get("source") or "cleaned").strip() or "cleaned",
+            }
+        )
+
+    cleaned, contradiction_removed = _drop_contradictions(cleaned)
+    stats["removed_contradiction"] = contradiction_removed
+
+    return cleaned, stats
+
+
 def main() -> None:
     args = parse_args()
 
@@ -346,6 +721,27 @@ def main() -> None:
     signature_rows, signature_sources = _read_group_rows(paths=signature_paths, max_rows_per_file=args.max_signature_rows, seed=args.seed)
     agent_rows, agent_sources = _read_group_rows(paths=args.agent_datasets, max_rows_per_file=args.max_agent_rows, seed=args.seed)
     memory_rows, memory_sources = _read_group_rows(paths=args.memory_datasets, max_rows_per_file=args.max_memory_rows, seed=args.seed)
+
+    core_rows, core_clean_stats = _clean_rows_by_policy(
+        core_rows,
+        min_response_chars=max(20, args.min_response_chars),
+        scope="core",
+    )
+    signature_rows, signature_clean_stats = _clean_rows_by_policy(
+        signature_rows,
+        min_response_chars=max(20, args.min_response_chars),
+        scope="signature",
+    )
+    agent_rows, agent_clean_stats = _clean_rows_by_policy(
+        agent_rows,
+        min_response_chars=max(20, args.min_response_chars),
+        scope="agent",
+    )
+    memory_rows, memory_clean_stats = _clean_rows_by_policy(
+        memory_rows,
+        min_response_chars=max(20, args.min_response_chars // 2),
+        scope="memory",
+    )
 
     domain_filter_removed = {"core": 0, "signature": 0, "agent": 0}
     if args.strict_domain:
@@ -411,6 +807,12 @@ def main() -> None:
             "strict_domain": bool(args.strict_domain),
             "keywords": list(args.domain_keywords),
             "removed_rows": domain_filter_removed,
+        },
+        "cleaning_filter": {
+            "core": core_clean_stats,
+            "signature": signature_clean_stats,
+            "agent": agent_clean_stats,
+            "memory": memory_clean_stats,
         },
         "policy": {
             "min_response_chars": args.min_response_chars,

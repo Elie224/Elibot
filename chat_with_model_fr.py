@@ -209,26 +209,28 @@ def update_profile_from_user_text(user_text: str, profile: dict[str, str]) -> No
         profile["prenom"] = name_match.group(1)
 
     city_match = re.search(
-        r"(?:je viens de|j'habite a|j'habite à|je vis a|je vis à|ma ville est)\s+([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
+        r"(?:je viens de|j'habite a|j'habite à|je vis(?: actuellement)? a|je vis(?: actuellement)? à|ma ville est)\s+([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
         text,
         flags=re.IGNORECASE,
     )
     if city_match:
         profile["ville"] = city_match.group(1)
 
-    sport_match = re.search(
-        r"(?:j'aime le|j'aime la|j'adore le|j'adore la|mon sport prefere est le|mon sport prefere est la|mon sport prefere c'est le|mon sport prefere c'est la|mon sport préféré est le|mon sport préféré est la|mon sport préféré c'est le|mon sport préféré c'est la)\s+([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not sport_match:
+    asks_for_sport = bool(re.search(r"\bquel(?:le)?\s+sport\b", text, flags=re.IGNORECASE))
+    if not asks_for_sport:
         sport_match = re.search(
-            r"(?:mon sport prefere|mon sport préféré)\s*(?:est|c'est)?\s*(?:le|la)?\s*([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
+            r"(?:j'aime le|j'aime la|j'adore le|j'adore la|mon sport prefere est le|mon sport prefere est la|mon sport prefere c'est le|mon sport prefere c'est la|mon sport préféré est le|mon sport préféré est la|mon sport préféré c'est le|mon sport préféré c'est la)\s+([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
             text,
             flags=re.IGNORECASE,
         )
-    if sport_match:
-        profile["sport"] = sport_match.group(1)
+        if not sport_match:
+            sport_match = re.search(
+                r"(?:mon sport prefere|mon sport préféré)\s*[,;:\-]?\s*(?:est|c'est)?\s*(?:le|la)?\s*([A-Za-zÀ-ÖØ-öø-ÿ\-']+)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        if sport_match:
+            profile["sport"] = sport_match.group(1)
 
     goal_match = re.search(r"(?:objectif|courir|course|entrainement|entraînement|seance|séance)?.{0,20}?(\d+)\s*minutes", text, flags=re.IGNORECASE)
     if goal_match:
