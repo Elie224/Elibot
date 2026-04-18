@@ -19,6 +19,12 @@ IN_DOMAIN_KEYWORDS = {
     "ml", "ia", "ai", "machine learning", "modele", "model", "entrainement", "evaluation",
     "classification", "regression", "prediction", "prompt", "llm", "token", "embedding",
     "pipeline", "workflow", "automatisation", "script", "python", "fastapi", "api", "docker",
+    "overfitting", "surapprentissage", "underfitting", "sous apprentissage", "biais variance",
+    "precision", "recall", "f1", "matrice de confusion", "cross validation", "validation croisee",
+    "k fold", "feature engineering", "data leakage", "fuite de donnees", "regularisation",
+    "learning rate", "gradient descent", "desequilibre", "class imbalance", "one hot",
+    "normalisation", "standardisation", "feature selection", "hyperparametre", "tuning",
+    "baseline", "mae", "rmse", "r2", "roc", "auc", "pr auc",
 }
 
 OUT_DOMAIN_KEYWORDS = {
@@ -39,10 +45,188 @@ HISTORY_MODE = "user-only"
 SYSTEM_PROMPT = (
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
     "Tu reponds de facon claire, concise et professionnelle. "
+    "Tu privilegies des reponses actionnables et bien structurees (etapes, bonnes pratiques, points de vigilance). "
     "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique."
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+RESPONSE_MODES = ["Court", "Expert"]
+QUESTION_MARKERS = {
+    "cest quoi", "ca veut dire quoi", "definition", "definir", "explique", "expliquer",
+    "difference", "pourquoi", "comment", "quand", "a quoi sert", "role",
+}
+
+CONCEPT_CARDS = [
+    {
+        "keys": ["overfitting", "surapprentissage"],
+        "title": "Overfitting",
+        "definition": "Le modele memorise le train et generalise mal sur de nouvelles donnees.",
+        "example": "Accuracy train tres haute mais performance validation/test qui chute.",
+        "best": "Cross-validation, regularisation, plus de donnees, simplifier le modele, early stopping.",
+        "pitfalls": "Tuner longtemps sur un seul jeu de validation.",
+    },
+    {
+        "keys": ["underfitting", "sous apprentissage", "sousapprentissage"],
+        "title": "Underfitting",
+        "definition": "Le modele est trop simple et n'apprend pas assez les patterns utiles.",
+        "example": "Scores faibles a la fois sur train et test.",
+        "best": "Modele plus expressif, meilleures features, plus d'epoque ou meilleur tuning.",
+        "pitfalls": "Conclure trop vite que les donnees sont mauvaises sans tester une baseline correcte.",
+    },
+    {
+        "keys": ["bias variance", "biais variance"],
+        "title": "Compromis Biais-Variance",
+        "definition": "Biais eleve: modele trop rigide. Variance elevee: modele trop sensible au bruit.",
+        "example": "Regression lineaire simple vs arbre tres profond.",
+        "best": "Ajuster complexite, regularisation et volume de donnees.",
+        "pitfalls": "Optimiser uniquement le train sans verifier la variance.",
+    },
+    {
+        "keys": ["precision recall", "precision rappel"],
+        "title": "Precision vs Recall",
+        "definition": "Precision mesure la fiabilite des positifs predits; recall mesure les positifs retrouves.",
+        "example": "Fraude: recall haut pour rater moins de fraudes.",
+        "best": "Choisir selon le cout metier des faux positifs/faux negatifs.",
+        "pitfalls": "Comparer des modeles sans fixer le seuil de decision.",
+    },
+    {
+        "keys": ["f1", "f1 score"],
+        "title": "F1-score",
+        "definition": "Moyenne harmonique precision/recall, utile sur classes desequilibrees.",
+        "example": "Un modele avec precision 0.9 et recall 0.5 aura un F1 moyen.",
+        "best": "Utiliser F1 quand precision et recall sont toutes deux importantes.",
+        "pitfalls": "Utiliser uniquement l'accuracy sur un dataset tres desequilibre.",
+    },
+    {
+        "keys": ["matrice de confusion", "confusion matrix"],
+        "title": "Matrice de confusion",
+        "definition": "Tableau des vrais/faux positifs/negatifs pour analyser les erreurs de classification.",
+        "example": "Permet d'identifier quelle classe est le plus confondue.",
+        "best": "Analyser par classe puis ajuster seuil/features/donnees.",
+        "pitfalls": "Ne pas regarder les distributions de classes en meme temps.",
+    },
+    {
+        "keys": ["cross validation", "validation croisee", "k fold", "kfold"],
+        "title": "Cross-validation",
+        "definition": "Evaluation robuste en entrainant/testant sur plusieurs decoupages du dataset.",
+        "example": "K-fold CV pour stabiliser l'estimation de performance.",
+        "best": "Utiliser stratification en classification desequilibree.",
+        "pitfalls": "Fuite de donnees si preprocessing fait avant split.",
+    },
+    {
+        "keys": ["train val test", "train validation test", "split"],
+        "title": "Split Train/Validation/Test",
+        "definition": "Train pour apprendre, validation pour tuner, test pour eval finale.",
+        "example": "70/15/15 ou 80/10/10 selon taille et contexte.",
+        "best": "Fixer le test une fois pour toutes et ne pas le reutiliser pour tuner.",
+        "pitfalls": "Utiliser le test pendant l'iteratif de tuning.",
+    },
+    {
+        "keys": ["feature engineering", "features"],
+        "title": "Feature Engineering",
+        "definition": "Creation/transformation de variables pour rendre le signal plus apprenable.",
+        "example": "Date -> jour, mois, saison; texte -> TF-IDF/embeddings.",
+        "best": "Features interpretable + validation metier + tests de fuite.",
+        "pitfalls": "Encoder des informations indisponibles au moment de prediction.",
+    },
+    {
+        "keys": ["data leakage", "fuite de donnees", "leakage"],
+        "title": "Data Leakage",
+        "definition": "Information future ou cible injectee dans les features durant l'entrainement.",
+        "example": "Normaliser sur tout le dataset avant split.",
+        "best": "Construire pipeline fit uniquement sur train.",
+        "pitfalls": "Resultats excellents offline puis echec en production.",
+    },
+    {
+        "keys": ["regularisation", "regularization", "l1", "l2", "dropout"],
+        "title": "Regularisation",
+        "definition": "Techniques pour reduire l'overfitting en contraignant le modele.",
+        "example": "L2 en regression, dropout en reseaux neuronaux.",
+        "best": "Tuner la force de regularisation avec validation.",
+        "pitfalls": "Sur-regulariser et perdre le signal utile.",
+    },
+    {
+        "keys": ["learning rate", "taux dapprentissage", "lr"],
+        "title": "Learning Rate",
+        "definition": "Pas de mise a jour des poids pendant l'optimisation.",
+        "example": "Trop haut: divergence; trop bas: entrainement lent.",
+        "best": "Warmup + scheduler et suivi de loss.",
+        "pitfalls": "Changer plusieurs hyperparametres sans isoler l'effet du LR.",
+    },
+    {
+        "keys": ["gradient descent", "descente de gradient"],
+        "title": "Descente de gradient",
+        "definition": "Algorithme d'optimisation qui ajuste les poids pour minimiser la perte.",
+        "example": "SGD/Adam en mini-batch sur chaque iteration.",
+        "best": "Surveiller gradients, loss et stabilite numerique.",
+        "pitfalls": "Ignorer le gradient exploding/vanishing.",
+    },
+    {
+        "keys": ["desequilibre", "imbalance", "class imbalance"],
+        "title": "Desequilibre de classes",
+        "definition": "Une classe est tres majoritaire, ce qui biaise la prediction.",
+        "example": "Fraude: 1% positifs, 99% negatifs.",
+        "best": "Class weights, re-sampling, metriques adaptees (F1, recall, PR-AUC).",
+        "pitfalls": "Se fier a une accuracy elevee mais trompeuse.",
+    },
+    {
+        "keys": ["one hot", "onehot", "encodage categoriel"],
+        "title": "One-hot Encoding",
+        "definition": "Transformation des categories en colonnes binaires.",
+        "example": "Ville={Paris,Lyon} -> deux colonnes 0/1.",
+        "best": "Gerer les categories rares/inconnues en production.",
+        "pitfalls": "Explosion dimensionnelle sur cardinalite tres elevee.",
+    },
+    {
+        "keys": ["normalisation", "normalization", "standardisation", "standardization", "scaling"],
+        "title": "Scaling des features",
+        "definition": "Mise a l'echelle des variables numeriques pour stabiliser l'apprentissage.",
+        "example": "StandardScaler (moyenne 0, ecart-type 1).",
+        "best": "Fit du scaler sur train uniquement, puis transform val/test/prod.",
+        "pitfalls": "Scalage global avant split (fuite de donnees).",
+    },
+    {
+        "keys": ["feature selection", "selection de variables"],
+        "title": "Feature Selection",
+        "definition": "Choisir les variables les plus utiles pour performance et robustesse.",
+        "example": "Filtrage par importance modele ou tests statistiques.",
+        "best": "Combiner approche metier + validation empirique.",
+        "pitfalls": "Retirer des variables utiles a la generalisation hors echantillon.",
+    },
+    {
+        "keys": ["hyperparameter", "hyperparametre", "tuning"],
+        "title": "Hyperparameter Tuning",
+        "definition": "Recherche des meilleurs reglages d'un modele (profondeur, LR, regularisation...).",
+        "example": "Grid Search, Random Search, Bayesian Optimization.",
+        "best": "Limiter l'espace de recherche et utiliser CV pour robustesse.",
+        "pitfalls": "Overfit sur validation par essais excessifs.",
+    },
+    {
+        "keys": ["baseline"],
+        "title": "Modele Baseline",
+        "definition": "Reference simple pour mesurer si un modele complexe apporte un vrai gain.",
+        "example": "Regle majoritaire ou regression lineaire comme point de depart.",
+        "best": "Toujours comparer les nouvelles versions a la baseline.",
+        "pitfalls": "Complexifier sans demonstrer d'amelioration mesurable.",
+    },
+    {
+        "keys": ["mae", "rmse", "r2", "metrique regression", "metrics regression"],
+        "title": "Metriques de regression",
+        "definition": "MAE: erreur moyenne absolue, RMSE: penalise plus les grosses erreurs, R2: variance expliquee.",
+        "example": "RMSE utile si les grosses erreurs sont critiques.",
+        "best": "Choisir la metrique selon impact metier et unite interpretable.",
+        "pitfalls": "Comparer des metriques non alignes avec l'objectif produit.",
+    },
+    {
+        "keys": ["roc", "auc", "pr auc"],
+        "title": "ROC-AUC / PR-AUC",
+        "definition": "Scores de qualite de classement sur plusieurs seuils de decision.",
+        "example": "PR-AUC souvent plus informative en fort desequilibre de classes.",
+        "best": "Analyser AUC + courbes + seuil operationnel.",
+        "pitfalls": "Utiliser seulement AUC sans fixer un seuil exploitable.",
+    },
+]
 
 
 def load_tokenizer(model_id):
@@ -146,8 +330,78 @@ def is_low_quality_answer(answer):
     return False
 
 
-def fallback_reply(user_text, profile):
+def pick_mode_text(response_mode, court_text, expert_text):
+    return expert_text if response_mode == "Expert" else court_text
+
+
+def format_structured_expert(title, definition, example, best, pitfalls):
+    return (
+        f"{title}:\n"
+        f"- Definition: {definition}\n"
+        f"- Exemple: {example}\n"
+        f"- Bonnes pratiques: {best}\n"
+        f"- Pieges a eviter: {pitfalls}"
+    )
+
+
+def find_concept_card(q_norm):
+    for card in CONCEPT_CARDS:
+        if any(term in q_norm for term in card["keys"]):
+            return card
+    return None
+
+
+def concept_reply(q_norm, response_mode):
+    card = find_concept_card(q_norm)
+    if not card:
+        return None
+    court = f"{card['title']}: {card['definition']}"
+    expert = format_structured_expert(
+        card["title"],
+        card["definition"],
+        card["example"],
+        card["best"],
+        card["pitfalls"],
+    )
+    return pick_mode_text(response_mode, court, expert)
+
+
+def estimate_answer_confidence(user_text, answer, direct_hit=False):
+    q_norm = _normalize_text(user_text or "")
+    a_norm = _normalize_text(answer or "")
+    score = 0.0
+    if direct_hit:
+        score += 0.55
+
+    key_hits = 0
+    for k in IN_DOMAIN_KEYWORDS:
+        if k in q_norm:
+            key_hits += 1
+    score += min(0.30, key_hits * 0.04)
+
+    if any(m in q_norm for m in QUESTION_MARKERS):
+        score += 0.10
+    if len(a_norm.split()) >= 18:
+        score += 0.10
+
+    return max(0.0, min(1.0, score))
+
+
+def clarification_reply(response_mode):
+    if response_mode == "Expert":
+        return (
+            "Pour te donner une reponse vraiment utile, precise l'un de ces axes:\n"
+            "1) Definition (concept),\n"
+            "2) Implementation (code/outils),\n"
+            "3) Production (architecture, monitoring, cout).\n"
+            "Tu peux aussi copier un extrait de code ou de donnees."
+        )
+    return "Je peux mieux t'aider si tu precises: definition, implementation, ou production."
+
+
+def fallback_reply(user_text, profile, response_mode="Court"):
     q = (user_text or "").lower().strip()
+    q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
 
     if not is_in_domain_query(q):
         return out_of_domain_reply()
@@ -164,10 +418,61 @@ def fallback_reply(user_text, profile):
     if "merci" in q:
         return "Avec plaisir."
 
+    concept = concept_reply(q_norm, response_mode)
+    if concept:
+        return concept
+
+    # Provide a useful technical fallback for common in-domain asks.
+    if "pipeline" in q_norm and ("ml" in q_norm or "machine learning" in q_norm):
+        court = (
+            "Version pro d'un pipeline ML de bout en bout: "
+            "1) Cadrage, 2) data prep, 3) features + split propre, "
+            "4) baseline + tuning, 5) evaluation, 6) deploiement API, 7) monitoring."
+        )
+        expert = (
+            "Version pro d'un pipeline ML de bout en bout:\n"
+            "1) Cadrage: objectif business, variable cible, metrique de succes.\n"
+            "2) Data: collecte, controle qualite, nettoyage, gestion des valeurs manquantes.\n"
+            "3) Features: encodage, normalisation, split train/validation/test sans fuite de donnees.\n"
+            "4) Modelisation: baseline, tuning, comparaison des modeles.\n"
+            "5) Evaluation: metriques adaptees + analyse des erreurs.\n"
+            "6) Deploiement: API versionnee + monitoring.\n"
+            "7) Exploitation: suivi de la derive des donnees et re-entrainement planifie."
+        )
+        return pick_mode_text(response_mode, court, expert)
+    if "fastapi" in q_norm or ("api" in q_norm and "modele" in q_norm):
+        court = (
+            "Architecture FastAPI pro: /health + /predict + /version, "
+            "schemas Pydantic, gestion d'erreurs centralisee, logs et metriques."
+        )
+        expert = (
+            "Architecture FastAPI professionnelle recommandee:\n"
+            "- Endpoints: /health, /predict, /version.\n"
+            "- Contrats: schemas Pydantic stricts (input/output).\n"
+            "- Fiabilite: gestion d'erreurs centralisee + timeouts + retries cotes clients.\n"
+            "- Exploitation: logs structures, traces, metriques de latence et taux d'erreur.\n"
+            "- Cycle de vie: versionnage du modele et strategie de rollback."
+        )
+        return pick_mode_text(response_mode, court, expert)
+    if "pandas" in q_norm or "csv" in q_norm:
+        court = (
+            "Optimisation pandas (pro): typer les colonnes, vectoriser les operations, "
+            "eviter apply ligne a ligne, optimiser les jointures, traiter les gros CSV par chunks."
+        )
+        expert = (
+            "Optimisation pandas (niveau pro):\n"
+            "- Typage explicite des colonnes des le chargement (dtype, parse_dates).\n"
+            "- Operations vectorisees (eviter apply ligne par ligne).\n"
+            "- Jointures performantes (index sur cles, colonnes reduites au strict necessaire).\n"
+            "- Lecture de gros fichiers en chunks + ecriture incrementalisee.\n"
+            "- Profiling systematique (temps, memoire) avant/apres optimisation."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
     if "prenom" in profile:
         return f"D'accord {profile['prenom']}, peux-tu reformuler en une phrase simple ?"
 
-    return "Je n'ai pas bien compris. Peux-tu reformuler en une phrase simple ?"
+    return clarification_reply(response_mode)
 
 
 def update_profile_from_user_text(user_text, profile):
@@ -227,9 +532,14 @@ def build_memory_lines(profile):
     return lines
 
 
-def maybe_rule_reply(user_text, profile):
+def maybe_rule_reply(user_text, profile, response_mode="Court"):
     q = user_text.lower().strip()
     q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
+
+    # Always prioritize concept cards before domain gating.
+    concept = concept_reply(q_norm, response_mode)
+    if concept:
+        return concept
 
     if not is_in_domain_query(q):
         return out_of_domain_reply()
@@ -242,6 +552,92 @@ def maybe_rule_reply(user_text, profile):
             "Je suis specialise en analyse de donnees, IA appliquee et automatisation. "
             "Je peux t'aider sur pipelines, modeles, API, debugging Python et workflows techniques."
         )
+
+    # Concept intents: answer directly with useful, structured detail.
+    if (
+        ("machine learning" in q_norm)
+        and ("cest quoi" in q_norm or "ca veut dire quoi" in q_norm or "definir" in q_norm or "definition" in q_norm or "explique" in q_norm)
+    ):
+        court = (
+            "Le machine learning est une methode ou un modele apprend des patterns a partir de donnees "
+            "pour predire ou classer sans regler chaque cas a la main."
+        )
+        expert = (
+            "Le machine learning (ML), c'est l'apprentissage automatique: au lieu d'ecrire toutes les regles, "
+            "on entraine un modele sur des exemples pour qu'il generalise sur de nouvelles donnees.\n"
+            "- Entree: des donnees (features).\n"
+            "- Sortie: une prediction (classe, valeur, score).\n"
+            "- Processus: preparation des donnees, entrainement, evaluation, deploiement, monitoring.\n"
+            "Exemples: detection de fraude, prevision de ventes, classification d'emails, recommandation."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
+    if (
+        ("difference" in q_norm or "diff" in q_norm)
+        and ("ia" in q_norm or "intelligence artificielle" in q_norm)
+        and ("machine learning" in q_norm or "deep learning" in q_norm)
+    ):
+        court = (
+            "IA est le domaine global; ML est une sous-partie de l'IA; Deep Learning est une sous-partie du ML "
+            "basee sur des reseaux de neurones profonds."
+        )
+        expert = (
+            "Difference IA / ML / Deep Learning:\n"
+            "- IA: champ global pour creer des systemes intelligents.\n"
+            "- ML: technique de l'IA qui apprend a partir de donnees.\n"
+            "- Deep Learning: ML base sur des reseaux de neurones multi-couches.\n"
+            "En pratique: IA est l'objectif, ML est la methode la plus utilisee, DL est tres performant sur image/texte/audio."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
+    # High-priority in-domain intents: answer directly instead of relying on generation.
+    if "pipeline" in q_norm and ("ml" in q_norm or "machine learning" in q_norm):
+        court = (
+            "Version pro d'un pipeline ML de bout en bout:\n"
+            "1) Cadrage (objectif/metrique), 2) data prep, 3) feature engineering + split propre, "
+            "4) baseline + tuning, 5) evaluation et analyse d'erreurs, 6) deploiement API, "
+            "7) monitoring et boucle d'amelioration continue."
+        )
+        expert = (
+            "Plan expert pipeline ML:\n"
+            "- Cadrer le cas d'usage + KPI metier.\n"
+            "- Assurer qualite data + anti-data-leakage.\n"
+            "- Construire baseline puis tuning (CV, recherche hyperparametres).\n"
+            "- Evaluer par segment + analyser les erreurs metier.\n"
+            "- Deployer en API versionnee + observabilite complete.\n"
+            "- Monitorer drift/performance et declencher un cycle de retraining."
+        )
+        return pick_mode_text(response_mode, court, expert)
+    if "pandas" in q_norm or "csv" in q_norm:
+        court = (
+            "Optimisation pandas (niveau pro): typer les colonnes, vectoriser les traitements, "
+            "eviter apply ligne par ligne, indexer les cles de jointure, "
+            "et traiter les gros volumes en chunks avec mesure de performance."
+        )
+        expert = (
+            "Approche expert pour un pipeline pandas lent:\n"
+            "- Profiling initial (cProfile/line_profiler + memoire).\n"
+            "- Lecture optimisee (dtype, usecols, parse_dates, chunksize).\n"
+            "- Transformations vectorisees, suppression des boucles Python.\n"
+            "- Jointures: indexation des cles + reduction de cardinalite en amont.\n"
+            "- Industrialisation: tests de non-regression perf + seuils de latence."
+        )
+        return pick_mode_text(response_mode, court, expert)
+    if "fastapi" in q_norm or ("api" in q_norm and "modele" in q_norm):
+        court = (
+            "Architecture FastAPI professionnelle: /health + /predict + /version, "
+            "schemas Pydantic stricts, gestion d'erreurs centralisee, logs structures, "
+            "metriques de prod et versionnage du modele."
+        )
+        expert = (
+            "Blueprint expert FastAPI pour servir un modele ML:\n"
+            "- Couche API: /health, /ready, /predict, /version.\n"
+            "- Contrats stricts: Pydantic + validation metier + gestion des valeurs aberrantes.\n"
+            "- Robustesse: timeouts, retries, circuit breaker cote appelant.\n"
+            "- Observabilite: logs structures, traces distribuees, metriques SLO (P95, taux d'erreur).\n"
+            "- Gouvernance modele: registry, canary/rollback, version de features et de modele."
+        )
+        return pick_mode_text(response_mode, court, expert)
 
     asks_name = (
         ("prenom" in q)
@@ -313,7 +709,7 @@ def build_prompt(history, user_text, profile):
     return "\n".join(lines)
 
 
-def chat(message, history):
+def chat(message, history, response_mode="Court"):
     history = history or []
     state = {
         "history": list(history),
@@ -327,9 +723,12 @@ def chat(message, history):
         return state["history"], state["history"]
 
     update_profile_from_user_text(user_text, state["profile"])
-    direct = maybe_rule_reply(user_text, state["profile"])
+    direct = maybe_rule_reply(user_text, state["profile"], response_mode=response_mode)
     if direct:
         answer = direct
+        conf = estimate_answer_confidence(user_text, answer, direct_hit=True)
+        if conf < 0.45:
+            answer = clarification_reply(response_mode)
         state["history"].append((user_text, answer))
         return state["history"], state["history"]
 
@@ -359,16 +758,17 @@ def chat(message, history):
 
     answer = TOKENIZER.decode(output_ids[0], skip_special_tokens=True)
     answer = clean_generated_text(answer)
-    if not answer or is_low_quality_answer(answer):
-        answer = fallback_reply(user_text, state["profile"])
+    conf = estimate_answer_confidence(user_text, answer, direct_hit=False)
+    if not answer or is_low_quality_answer(answer) or conf < 0.40:
+        answer = fallback_reply(user_text, state["profile"], response_mode=response_mode)
 
     state["history"].append((user_text, answer))
     return state["history"], state["history"]
 
 
-def handle_submit(message, history):
-        new_chat, new_state = chat(message, history)
-        return new_chat, new_state, ""
+def handle_submit(message, history, response_mode="Court"):
+    new_chat, new_state = chat(message, history, response_mode=response_mode)
+    return new_chat, new_state, ""
 
 
 APP_CSS = """
@@ -408,55 +808,57 @@ APP_CSS = """
 
 
 with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
-        with gr.Column(elem_classes=["app-shell"]):
-                gr.Markdown(
-                        """
-                        <div class="hero-title"><h1>Elibot</h1></div>
-                    <div class="hero-sub">Assistant specialise en data, IA appliquee et automatisation.</div>
-                        """
-                )
+    with gr.Column(elem_classes=["app-shell"]):
+        gr.Markdown("## Elibot\nAssistant specialise en data, IA appliquee et automatisation.")
 
-                chatbot = gr.Chatbot(
-                        label="Conversation",
-                        height=430,
-                        bubble_full_width=False,
-                        show_copy_button=True,
-                )
-                state = gr.State([])
-
-                with gr.Row(elem_classes=["quick-row"]):
-                    quick_1 = gr.Button("Explique un pipeline ML", size="sm")
-                    quick_2 = gr.Button("Corrige ce code pandas", size="sm")
-                    quick_3 = gr.Button("Architecture API FastAPI", size="sm")
-                    quick_4 = gr.Button("Automatiser un workflow CSV", size="sm")
-
-                msg = gr.Textbox(
-                        label="Message",
-                        placeholder="Ecris ton message ici...",
-                        lines=2,
-                        max_lines=4,
-                )
-
-                with gr.Row():
-                        send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
-                        clear = gr.Button("Reinitialiser", elem_id="reset-btn")
-
-        send.click(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
-        msg.submit(handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg])
-        clear.click(lambda: ([], [], ""), inputs=None, outputs=[chatbot, state, msg])
-
-        quick_1.click(lambda: "Peux-tu expliquer un pipeline machine learning de bout en bout ?", outputs=[msg]).then(
-                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        chatbot = gr.Chatbot(
+            label="Conversation",
+            height=430,
+            bubble_full_width=False,
+            show_copy_button=True,
         )
-        quick_2.click(lambda: "Voici un script pandas lent, comment l'optimiser ?", outputs=[msg]).then(
-                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+        state = gr.State([])
+
+        with gr.Row(elem_classes=["quick-row"]):
+            quick_1 = gr.Button("Explique un pipeline ML", size="sm")
+            quick_2 = gr.Button("Corrige ce code pandas", size="sm")
+            quick_3 = gr.Button("Architecture API FastAPI", size="sm")
+            quick_4 = gr.Button("Automatiser un workflow CSV", size="sm")
+
+        msg = gr.Textbox(
+            label="Message",
+            placeholder="Ecris ton message ici...",
+            lines=2,
+            max_lines=4,
         )
-        quick_3.click(lambda: "Propose une architecture FastAPI pour servir un modele ML.", outputs=[msg]).then(
-                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
+
+        response_mode = gr.Radio(
+            choices=RESPONSE_MODES,
+            value="Expert",
+            label="Style de reponse",
+            info="Court: synthese rapide | Expert: version detaillee et operationnelle",
         )
-        quick_4.click(lambda: "Comment automatiser un workflow de nettoyage CSV en Python ?", outputs=[msg]).then(
-                handle_submit, inputs=[msg, state], outputs=[chatbot, state, msg]
-        )
+
+        with gr.Row():
+            send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
+            clear = gr.Button("Reinitialiser", elem_id="reset-btn")
+
+    send.click(handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg])
+    msg.submit(handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg])
+    clear.click(lambda: ([], [], ""), inputs=None, outputs=[chatbot, state, msg])
+
+    quick_1.click(lambda: "Peux-tu expliquer un pipeline machine learning de bout en bout ?", outputs=[msg]).then(
+        handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg]
+    )
+    quick_2.click(lambda: "Voici un script pandas lent, comment l'optimiser ?", outputs=[msg]).then(
+        handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg]
+    )
+    quick_3.click(lambda: "Propose une architecture FastAPI pour servir un modele ML.", outputs=[msg]).then(
+        handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg]
+    )
+    quick_4.click(lambda: "Comment automatiser un workflow de nettoyage CSV en Python ?", outputs=[msg]).then(
+        handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg]
+    )
 
 
 demo.launch()
