@@ -1,7 +1,7 @@
 param(
-    [string]$TaskName = "Elibot Weekly Live Benchmark",
-    [string]$Day = "SUN",
-    [string]$Time = "04:00",
+    [string]$TaskName = "Elibot Weekly Live Benchmark Fallback",
+    [string]$Day = "MON",
+    [string]$Time = "04:15",
     [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot",
     [string]$PythonExe = "C:\Users\KOURO\Desktop\chatbot\.venv_gpu\Scripts\python.exe",
     [ValidateSet("Court", "Expert")]
@@ -12,13 +12,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$runScript = Join-Path $ProjectRoot "scripts\run_live_benchmark_and_summary.ps1"
+$runScript = Join-Path $ProjectRoot "scripts\run_live_benchmark_fallback_if_missing.ps1"
 if (-not (Test-Path $runScript)) {
     throw "Run script not found at: $runScript"
 }
 
 $thresholdArg = $FailIfBelow.ToString([System.Globalization.CultureInfo]::InvariantCulture)
-$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -PythonExe "{1}" -Mode {2} -FailIfBelow {3}' -f $runScript, $PythonExe, $Mode, $thresholdArg
+$taskCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -FailIfBelow {1}' -f $runScript, $thresholdArg
 
 cmd.exe /c ('schtasks /Delete /TN "{0}" /F >nul 2>&1' -f $TaskName) | Out-Null
 

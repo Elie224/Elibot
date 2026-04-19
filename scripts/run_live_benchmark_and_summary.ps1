@@ -6,7 +6,9 @@ param(
     [string]$OutCsv = "reports/eval_business_live_latest.csv",
     [string]$OutMd = "reports/eval_business_live_latest.md",
     [ValidateSet("Court", "Expert")]
-    [string]$Mode = "Expert"
+    [string]$Mode = "Expert",
+    [double]$FailIfBelow = -1,
+    [string]$AlertFile = "reports/eval_business_live_alert.txt"
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,3 +23,10 @@ $ErrorActionPreference = "Stop"
 & $PythonExe scripts/build_live_benchmark_summary.py `
     --in-json $OutJson `
     --out-md $OutMd
+
+if ($FailIfBelow -ge 0) {
+    & $PythonExe scripts/assert_live_benchmark_threshold.py `
+        --in-json $OutJson `
+        --threshold $FailIfBelow `
+        --alert-file $AlertFile
+}
