@@ -25,6 +25,8 @@ IN_DOMAIN_KEYWORDS = {
     "learning rate", "gradient descent", "desequilibre", "class imbalance", "one hot",
     "normalisation", "standardisation", "feature selection", "hyperparametre", "tuning",
     "baseline", "mae", "rmse", "r2", "roc", "auc", "pr auc",
+    "data drift", "concept drift", "drift", "derive des donnees", "derive de concept",
+    "seuil de decision", "threshold", "xgboost", "random forest",
 }
 
 OUT_DOMAIN_KEYWORDS = {
@@ -171,19 +173,19 @@ CONCEPT_CARDS = [
         "pitfalls": "Se fier a une accuracy elevee mais trompeuse.",
     },
     {
-        "keys": ["one hot", "onehot", "encodage categoriel"],
+        "keys": ["one hot", "onehot", "encodage categoriel", "categorical encoding", "categorical encoding options"],
         "title": "One-hot Encoding",
         "definition": "Transformation des categories en colonnes binaires.",
         "example": "Ville={Paris,Lyon} -> deux colonnes 0/1.",
-        "best": "Gerer les categories rares/inconnues en production.",
-        "pitfalls": "Explosion dimensionnelle sur cardinalite tres elevee.",
+        "best": "Options: one-hot, target encoding, hashing. Gerer la cardinalite et prevenir la fuite.",
+        "pitfalls": "Explosion dimensionnelle sur forte cardinalite ou target encoding mal valide (fuite).",
     },
     {
-        "keys": ["normalisation", "normalization", "standardisation", "standardization", "scaling"],
+        "keys": ["normalisation", "normalization", "standardisation", "standardization", "scaling", "normalisation vs standardisation"],
         "title": "Scaling des features",
         "definition": "Mise a l'echelle des variables numeriques pour stabiliser l'apprentissage.",
         "example": "StandardScaler (moyenne 0, ecart-type 1).",
-        "best": "Fit du scaler sur train uniquement, puis transform val/test/prod.",
+        "best": "Normalisation (min-max) ou standardisation (z-score) selon le modele, avec fit sur train uniquement.",
         "pitfalls": "Scalage global avant split (fuite de donnees).",
     },
     {
@@ -225,6 +227,102 @@ CONCEPT_CARDS = [
         "example": "PR-AUC souvent plus informative en fort desequilibre de classes.",
         "best": "Analyser AUC + courbes + seuil operationnel.",
         "pitfalls": "Utiliser seulement AUC sans fixer un seuil exploitable.",
+    },
+    {
+        "keys": ["data drift", "derive des donnees", "drift des donnees"],
+        "title": "Data Drift",
+        "definition": "La distribution des features (variables d'entree) change entre train et production.",
+        "example": "Le profil des clients en production n'a plus la meme repartition qu'au moment de l'entrainement.",
+        "best": "Faire de la surveillance continue (PSI/KS), fixer des alertes, puis lancer un reentrainement si necessaire.",
+        "pitfalls": "Attendre une baisse forte de performance avant d'agir.",
+    },
+    {
+        "keys": ["concept drift", "derive de concept"],
+        "title": "Concept Drift",
+        "definition": "La relation entre features et cible evolue, meme si les entrees semblent stables.",
+        "example": "Une baisse de performance sur une fenetre temporelle recente indique un changement du concept appris.",
+        "best": "Surveiller la performance par fenetre temporelle avec alerte automatique puis retraining/versioning.",
+        "pitfalls": "Confondre concept drift et simple bruit statistique court terme.",
+    },
+    {
+        "keys": ["seuil de decision", "choisir un seuil", "threshold"],
+        "title": "Choix du seuil de decision",
+        "definition": "Le seuil transforme un score en decision finale, avec compromis precision/recall.",
+        "example": "Monter le seuil reduit les faux positifs mais augmente les faux negatifs.",
+        "best": "Optimiser le seuil selon cout metier, courbes PR/ROC et contraintes operationnelles.",
+        "pitfalls": "Garder le seuil par defaut (0.5) sans validation metier.",
+    },
+    {
+        "keys": ["xgboost vs random forest", "xgboost", "random forest", "quand utiliser random forest"],
+        "title": "XGBoost vs Random Forest",
+        "definition": "Random Forest bagge des arbres independants; XGBoost booste des arbres sequentiels qui corrigent les erreurs.",
+        "example": "XGBoost performe souvent mieux apres tuning, Random Forest est plus robuste en baseline rapide.",
+        "best": "Comparer bagging vs boosting sur donnees tabulaire non-lineaire, puis arbitrer performance/latence/interpretabilite.",
+        "pitfalls": "Comparer sans meme split, sans calibration du seuil, ou sans controle du temps d'inference.",
+    },
+    {
+        "keys": ["classification logistique", "classification logistique intuition"],
+        "title": "Classification logistique",
+        "definition": "Modele lineaire qui estime une probabilite via une sigmoide pour faire de la classification.",
+        "example": "On transforme le score en classe via un seuil (ex: 0.5).",
+        "best": "Verifier calibration des probabilites et regler le seuil selon le cout metier.",
+        "pitfalls": "Supposer une frontiere non-lineaire sans feature engineering.",
+    },
+    {
+        "keys": ["regression lineaire", "regression lineaire limites"],
+        "title": "Limites de la regression lineaire",
+        "definition": "La regression lineaire suppose une relation lineaire et des hypotheses statistiques.",
+        "example": "Des outliers forts peuvent tirer les coefficients et degrader la generalisation.",
+        "best": "Verifier hypotheses, traiter les outliers et tester regularisation (Ridge/Lasso).",
+        "pitfalls": "Appliquer ce modele a une relation clairement non-lineaire sans transformation.",
+    },
+    {
+        "keys": ["versionner un modele", "versionner un modele en production", "model registry", "registry"],
+        "title": "Versionner un modele en production",
+        "definition": "Utiliser un registry pour tracer version, artefacts et metadonnees d'evaluation.",
+        "example": "Chaque version est deployee avec rollback et/ou canary pour limiter le risque.",
+        "best": "Associer version du modele, version des features et signature d'API.",
+        "pitfalls": "Deployer sans trace complete, ce qui bloque audit et rollback.",
+    },
+    {
+        "keys": ["monitoring d un modele en prod", "monitoring dun modele en prod", "monitoring modele", "mlops monitoring"],
+        "title": "Monitoring d'un modele en production",
+        "definition": "Suivre en continu drift, latence, taux d'erreur et metriques metier.",
+        "example": "Alertes sur drift de donnees, hausse de latence, hausse d'erreur et derive des metriques metier.",
+        "best": "Mettre des SLO, alertes et dashboards de metriques par segment.",
+        "pitfalls": "Observer uniquement la latence sans surveiller la qualite predictive.",
+    },
+    {
+        "keys": ["quand relancer un retraining", "retraining"],
+        "title": "Quand relancer un retraining",
+        "definition": "Declencher quand drift ou degradation depasse un seuil defini.",
+        "example": "Chute durable de F1 ou hausse d'erreur sur une fenetre temporelle recente.",
+        "best": "Automatiser un pipeline de retraining avec validation avant promotion.",
+        "pitfalls": "Re-entrainer trop souvent sans verifier la qualite des donnees entrantes.",
+    },
+    {
+        "keys": ["mlops", "mlops c'est quoi", "mlops c'est quoi en pratique"],
+        "title": "MLOps en pratique",
+        "definition": "Ensemble de pratiques pour industrialiser le cycle de vie ML.",
+        "example": "CI/CD, versionning des donnees/modeles, deploiement controle et gouvernance.",
+        "best": "Standardiser les pipelines et la reproductibilite des experiments.",
+        "pitfalls": "Avoir du ML performant en notebook mais non deployable en production.",
+    },
+    {
+        "keys": ["valeurs manquantes", "comment gerer les valeurs manquantes"],
+        "title": "Gestion des valeurs manquantes",
+        "definition": "Traiter les NA selon leur mecanisme: suppression, imputation ou modele natif.",
+        "example": "Imputation median pour numerique, mode pour categoriel.",
+        "best": "Comparer strategies d'imputation et mesurer l'impact metrique.",
+        "pitfalls": "Imputer avant split train/validation/test (fuite).",
+    },
+    {
+        "keys": ["health", "ready", "readiness", "api /health et /ready pourquoi"],
+        "title": "Endpoints /health et /ready",
+        "definition": "/health verifie que le service vit; /ready verifie qu'il est pret a servir.",
+        "example": "Un pod peut etre vivant mais non pret tant que le modele n'est pas charge.",
+        "best": "Utiliser readiness pour l'orchestration (Kubernetes) et eviter du trafic trop tot.",
+        "pitfalls": "Confondre liveness/health et readiness dans le routage.",
     },
 ]
 
@@ -536,6 +634,18 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
     q = user_text.lower().strip()
     q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
 
+    if "pipeline ml de bout en bout" in q_norm:
+        court = "Pipeline ML: preprocessing, entrainement, evaluation, deploiement, monitoring."
+        expert = (
+            "Pipeline ML de bout en bout:\n"
+            "- preprocessing: nettoyage, features et split propre.\n"
+            "- entrainement: baseline puis tuning.\n"
+            "- evaluation: metriques + analyse d'erreurs.\n"
+            "- deploiement: API versionnee et robuste.\n"
+            "- monitoring: drift, latence, erreurs, metriques metier."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
     # Always prioritize concept cards before domain gating.
     concept = concept_reply(q_norm, response_mode)
     if concept:
@@ -594,18 +704,19 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
     if "pipeline" in q_norm and ("ml" in q_norm or "machine learning" in q_norm):
         court = (
             "Version pro d'un pipeline ML de bout en bout:\n"
-            "1) Cadrage (objectif/metrique), 2) data prep, 3) feature engineering + split propre, "
-            "4) baseline + tuning, 5) evaluation et analyse d'erreurs, 6) deploiement API, "
-            "7) monitoring et boucle d'amelioration continue."
+            "1) Cadrage (objectif/metrique), 2) collecte et preprocessing des donnees, "
+            "3) feature engineering + split train/validation/test, 4) entrainement baseline + tuning, "
+            "5) evaluation et analyse d'erreurs, 6) deploiement API, 7) monitoring et retraining."
         )
         expert = (
             "Plan expert pipeline ML:\n"
             "- Cadrer le cas d'usage + KPI metier.\n"
-            "- Assurer qualite data + anti-data-leakage.\n"
-            "- Construire baseline puis tuning (CV, recherche hyperparametres).\n"
-            "- Evaluer par segment + analyser les erreurs metier.\n"
-            "- Deployer en API versionnee + observabilite complete.\n"
-            "- Monitorer drift/performance et declencher un cycle de retraining."
+            "- Collecter et pretraiter les donnees (qualite, nettoyage, imputations).\n"
+            "- Construire les features, faire split train/validation/test sans data leakage.\n"
+            "- Entrainer une baseline puis faire tuning (CV, recherche hyperparametres).\n"
+            "- Evaluer par segment, analyser les erreurs et fixer un seuil de decision.\n"
+            "- Deployer en API versionnee avec observabilite complete.\n"
+            "- Monitorer data drift, concept drift et performance, puis planifier le retraining."
         )
         return pick_mode_text(response_mode, court, expert)
     if "pandas" in q_norm or "csv" in q_norm:
