@@ -1,0 +1,6 @@
+# Approved sources for web ingestion
+https://scikit-learn.org/stable/supervised_learning.html
+https://pytorch.org/docs/stable/index.html
+https://huggingface.co/docs/transformers/index
+https://fastapi.tiangolo.com/tutorial/
+https://docs.python.org/3/tutorial/
