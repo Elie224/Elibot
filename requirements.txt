@@ -1,0 +1,1 @@
+-r hf_space/requirements.txt
