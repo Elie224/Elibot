@@ -88,6 +88,13 @@ AFFIRMATION_MARKERS = {
     "oui", "ouais", "yes", "ok", "okay", "daccord", "d accord", "vas y", "go", "parfait"
 }
 
+AFFIRMATION_TOKENS = {
+    "oui", "ouais", "yes", "ok", "okay", "daccord", "d", "accord", "vas", "y", "go",
+    "parfait", "fait", "fais", "le", "continuer", "continue",
+}
+
+AFFIRMATION_CONNECTORS = {"stp", "svp", "please", "alors", "du", "coup", "maintenant"}
+
 CONCEPT_CARDS = [
     {
         "keys": ["overfitting", "surapprentissage"],
@@ -412,12 +419,21 @@ def is_short_affirmation(user_text: str) -> bool:
     q_norm = _normalize_text(user_text or "")
     if not q_norm:
         return False
-    return q_norm in AFFIRMATION_MARKERS
+    if q_norm in AFFIRMATION_MARKERS:
+        return True
+    tokens = q_norm.split()
+    if not tokens or len(tokens) > 6:
+        return False
+    has_affirmation = any(t in AFFIRMATION_TOKENS for t in tokens)
+    all_allowed = all((t in AFFIRMATION_TOKENS) or (t in AFFIRMATION_CONNECTORS) for t in tokens)
+    return has_affirmation and all_allowed
 
 
 def is_in_domain_query(user_text):
     text = _normalize_text(user_text or "")
     if not text:
+        return True
+    if is_short_affirmation(text):
         return True
     if any(marker in text for marker in FOLLOWUP_MARKERS):
         return True
@@ -1181,16 +1197,21 @@ def chat(message, history, response_mode="Court"):
         return state["history"], state["history"]
 
     update_profile_from_user_text(user_text, state["profile"])
-    direct = maybe_rule_reply(user_text, state["profile"], response_mode=response_mode)
+    direct = None
 
-    # Treat short confirmations ("oui", "ok", "vas-y") as contextual follow-ups
-    # when the previous assistant turn explicitly proposed a next step.
-    if (not direct) and state["history"] and is_short_affirmation(user_text):
+    # Treat short confirmations ("oui", "ok", "vas y", etc.) as contextual follow-ups
+    # before generic rule routing (which may otherwise fall back to out-of-domain).
+    if state["history"] and is_short_affirmation(user_text):
         prev_user, prev_assistant = state["history"][-1]
         prev_assistant_norm = _normalize_text(prev_assistant or "")
-        if any(marker in prev_assistant_norm for marker in ["si tu veux", "blueprint", "go live", "30 60 90"]):
+        if any(marker in prev_assistant_norm for marker in ["si tu veux", "blueprint", "go live", "30 60 90", "je peux te", "je te fais"]):
             contextual_user_text = f"{prev_user} blueprint go live 30 60 90"
-            direct = maybe_rule_reply(contextual_user_text, state["profile"], response_mode=response_mode)
+        else:
+            contextual_user_text = f"{prev_user} approfondis avec plus de details"
+        direct = maybe_rule_reply(contextual_user_text, state["profile"], response_mode=response_mode)
+
+    if not direct:
+        direct = maybe_rule_reply(user_text, state["profile"], response_mode=response_mode)
 
     # If the user writes an implicit follow-up ("approfondis", "plus de details", etc.),
     # reuse the previous user topic so the answer stays contextual instead of generic.
