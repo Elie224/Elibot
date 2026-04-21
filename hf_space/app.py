@@ -60,9 +60,10 @@ HISTORY_TURNS = 6
 HISTORY_MODE = "full"
 SYSTEM_PROMPT = (
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
-    "Tu tiens une conversation technique fluide, avec reponses pedagogiques et progressives. "
+    "Tu tiens une conversation technique fluide, avec un style humain, naturel et professionnel. "
     "Tu peux donner des definitions, des remarques d'expert, des details concrets et des exemples pratiques. "
-    "Tu privilegies des reponses actionnables et bien structurees (etapes, bonnes pratiques, points de vigilance). "
+    "Tu evites les listes seches sans contexte: tu expliques le pourquoi, le comment, et les compromis. "
+    "Tu privilegies des reponses actionnables et bien structurees (objectif, execution, risques, prochaines actions). "
     "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique."
 )
 
@@ -714,12 +715,16 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
     if "pipeline ml de bout en bout" in q_norm:
         court = "Pipeline ML: preprocessing, entrainement, evaluation, deploiement, monitoring."
         expert = (
-            "Pipeline ML de bout en bout:\n"
-            "- preprocessing: nettoyage, features et split propre.\n"
-            "- entrainement: baseline puis tuning.\n"
-            "- evaluation: metriques + analyse d'erreurs.\n"
-            "- deploiement: API versionnee et robuste.\n"
-            "- monitoring: drift, latence, erreurs, metriques metier."
+            "Bonne question. Si tu veux un pipeline ML vraiment professionnel, il faut le penser comme un produit et pas seulement comme un modele. "
+            "On commence par cadrer le probleme metier (decisions a prendre, KPI cibles, contraintes de latence/cout), puis on securise les donnees "
+            "(qualite, nettoyage, schema stable, anti-data-leakage).\n\n"
+            "Ensuite, on construit une baseline simple mais solide pour avoir un point de comparaison clair, avant de passer au tuning avance "
+            "(cross-validation, choix des hyperparametres, calibration des seuils). La partie evaluation doit aller au-dela d'une metrique globale: "
+            "il faut analyser les erreurs par segment (type client, geographie, plage temporelle) pour verifier que la performance est robuste.\n\n"
+            "Cote production, je recommande une API versionnee avec observabilite complete (logs structures, latence P95, taux d'erreur, drift de donnees et de concept), "
+            "plus un plan de retraining declenche par seuils. Par exemple, si la precision baisse durablement sur un segment critique, on lance une boucle de re-entrainement "
+            "avec validation avant promotion.\n\n"
+            "Si tu veux, je peux te donner la version operationnelle en 30-60-90 jours (MVP, hardening, industrialisation) selon ton contexte."
         )
         return pick_mode_text(response_mode, court, expert)
 
@@ -790,14 +795,17 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
             "5) evaluation et analyse d'erreurs, 6) deploiement API, 7) monitoring et retraining."
         )
         expert = (
-            "Plan expert pipeline ML:\n"
-            "- Cadrer le cas d'usage + KPI metier.\n"
-            "- Collecter et pretraiter les donnees (qualite, nettoyage, imputations).\n"
-            "- Construire les features, faire split train/validation/test sans data leakage.\n"
-            "- Entrainer une baseline puis faire tuning (CV, recherche hyperparametres).\n"
-            "- Evaluer par segment, analyser les erreurs et fixer un seuil de decision.\n"
-            "- Deployer en API versionnee avec observabilite complete.\n"
-            "- Monitorer data drift, concept drift et performance, puis planifier le retraining."
+            "Tu as raison de viser une approche plus pro. Un bon pipeline ML ne doit pas juste aligner des etapes techniques: "
+            "il doit relier chaque etape a une decision metier concrete.\n\n"
+            "1) Cadrage: on clarifie la question metier, la metrique de succes et le cout de l'erreur. "
+            "Exemple: faux negatif plus grave que faux positif en detection de fraude.\n"
+            "2) Donnees: on industrialise la qualite (schema, valeurs manquantes, dedoublonnage, anti-fuite). "
+            "Sans cette base, un modele performant en test peut echouer en production.\n"
+            "3) Modelisation: baseline d'abord, puis tuning cible. L'objectif est d'ameliorer de facon mesurable, pas de complexifier pour rien.\n"
+            "4) Evaluation: au-dela du score global, on lit les erreurs par segment et on ajuste le seuil de decision selon le risque metier.\n"
+            "5) Mise en production: API versionnee + traçabilite (version modele, features, dataset) + rollback rapide.\n"
+            "6) Monitoring continu: drift des donnees, derive du concept, latence, taux d'erreur, metriques metier; puis retraining pilote par seuils.\n\n"
+            "Si tu veux, je te fais maintenant un blueprint concret (stack, endpoints, dashboards, et checklist de go-live) adapte a ton projet."
         )
         return pick_mode_text(response_mode, court, expert)
     if "pandas" in q_norm or "csv" in q_norm:
