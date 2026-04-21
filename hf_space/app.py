@@ -84,6 +84,10 @@ FOLLOWUP_MARKERS = {
     "ok et", "et du coup", "et ensuite", "pour aller plus loin",
 }
 
+AFFIRMATION_MARKERS = {
+    "oui", "ouais", "yes", "ok", "okay", "daccord", "d accord", "vas y", "go", "parfait"
+}
+
 CONCEPT_CARDS = [
     {
         "keys": ["overfitting", "surapprentissage"],
@@ -402,6 +406,13 @@ def clean_generated_text(text):
 
 def _normalize_text(value):
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9à-öø-ÿ\s]", " ", value.lower())).strip()
+
+
+def is_short_affirmation(user_text: str) -> bool:
+    q_norm = _normalize_text(user_text or "")
+    if not q_norm:
+        return False
+    return q_norm in AFFIRMATION_MARKERS
 
 
 def is_in_domain_query(user_text):
@@ -759,6 +770,32 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
             "- Boucle d'apprentissage: feedback analystes fraude, labellisation retardee, retraining pilote par seuils.\n"
             "- Plan de securite: fallback regles si modele indisponible, versioning strict, rollback instantane.\n\n"
             "Si tu veux, je peux te donner une architecture de reference concrete (Kafka + Feature Store + FastAPI + Redis + monitoring) avec budget latence cible < 150 ms."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
+    if (
+        ("blueprint" in q_norm or "go live" in q_norm or "golive" in q_norm or "30 60 90" in q_norm)
+        and ("pipeline" in q_norm or "ml" in q_norm or "machine learning" in q_norm or "fraude" in q_norm)
+    ):
+        court = (
+            "Blueprint rapide: 30 jours pour stabiliser les donnees et la baseline, "
+            "60 jours pour industrialiser le scoring temps reel, 90 jours pour monitoring/retraining pilote par KPI."
+        )
+        expert = (
+            "Parfait, voici un blueprint concret en 30-60-90 jours pour un pipeline ML fraude temps reel.\n\n"
+            "0-30 jours (fondations)\n"
+            "- Cadrage metier: KPI cibles (fraude captee, faux positifs, latence de decision).\n"
+            "- Donnees: schema d'evenements stable, qualite, anti-data leakage, labels fiables.\n"
+            "- Baseline: modele simple + regles metier minimales pour avoir une reference solide.\n\n"
+            "31-60 jours (industrialisation)\n"
+            "- Scoring temps reel: service API faible latence + feature store online.\n"
+            "- Moteur de decision: accepter / challenger / bloquer selon seuils et criticite.\n"
+            "- Evaluation business: calibration du seuil avec metier (cout faux positifs vs faux negatifs).\n\n"
+            "61-90 jours (fiabilisation production)\n"
+            "- Observabilite complete: latence P95, drift data/concept, performance par segment.\n"
+            "- Gouvernance: versionning modele/features, rollback, audit trail des decisions.\n"
+            "- Retraining pilote: declenchement par seuils + validation avant promotion.\n\n"
+            "Si tu veux, je peux te fournir la version architecture technique (components, contrats API, dashboards) directement exploitable par ton equipe."
         )
         return pick_mode_text(response_mode, court, expert)
 
@@ -1145,6 +1182,15 @@ def chat(message, history, response_mode="Court"):
 
     update_profile_from_user_text(user_text, state["profile"])
     direct = maybe_rule_reply(user_text, state["profile"], response_mode=response_mode)
+
+    # Treat short confirmations ("oui", "ok", "vas-y") as contextual follow-ups
+    # when the previous assistant turn explicitly proposed a next step.
+    if (not direct) and state["history"] and is_short_affirmation(user_text):
+        prev_user, prev_assistant = state["history"][-1]
+        prev_assistant_norm = _normalize_text(prev_assistant or "")
+        if any(marker in prev_assistant_norm for marker in ["si tu veux", "blueprint", "go live", "30 60 90"]):
+            contextual_user_text = f"{prev_user} blueprint go live 30 60 90"
+            direct = maybe_rule_reply(contextual_user_text, state["profile"], response_mode=response_mode)
 
     # If the user writes an implicit follow-up ("approfondis", "plus de details", etc.),
     # reuse the previous user topic so the answer stays contextual instead of generic.
