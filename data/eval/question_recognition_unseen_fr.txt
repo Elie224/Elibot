@@ -1,0 +1,20 @@
+stp jarrive pas a comprendre pourquoi mon score se degrade en ligne
+tu peux detailler la difference auc et auprc sur dataset desequilibre
+quel est le meilleur moyen de fixer un seuil quand le cout metier est asymetrique
+jai besoin dun rappel rapide sur leakage temporel
+comment verifier que mon pipeline inference suit exactement train
+si mes probabilites sont mauvaises je fais quoi calibration isotonic ou platt
+jhesite entre xgboost et logreg pour un probleme de churn tabulaire
+que faire quand recall est faible alors que accuracy semble bonne
+peux tu me proposer une strategie anti drift en production
+on choisit quelle metrique pour detection fraude quand faux negatif tres cher
+explique moi simplement precision recall f1 avec un mini exemple
+pk mon modele surapprend apres quelques epochs seulement
+je veux un plan de debug data quality avant entrainement
+quelle validation utiliser pour des donnees time series
+tu recommandes quoi pour traiter classes ultra rares
+comment comparer deux modeles sans tomber dans le piege accuracy
+je veux comprendre la p value dans une regression logistique
+peux tu me donner une methode pour monitorer la performance sans labels rapides
+faut il standardiser avant regression lineaire et ridge
+quel test faire pour verifier stationnarite avant arima

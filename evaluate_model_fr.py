@@ -16,6 +16,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-new-tokens", type=int, default=96)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top-p", type=float, default=0.9)
+    parser.add_argument("--repetition-penalty", type=float, default=1.1)
+    parser.add_argument("--no-repeat-ngram", type=int, default=3)
     parser.add_argument("--out-json", default="reports/eval_chatbot_fr_v1.json")
     parser.add_argument("--out-csv", default="reports/eval_chatbot_fr_v1_samples.csv")
     return parser.parse_args()
@@ -84,13 +88,20 @@ def main() -> None:
         prompt = f"Utilisateur: {row['instruction']}\nAssistant:"
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=128).to(device)
 
+        use_sampling = args.temperature > 0
+        gen_kwargs = {
+            "max_new_tokens": args.max_new_tokens,
+            "do_sample": use_sampling,
+            "num_beams": 1,
+            "repetition_penalty": args.repetition_penalty,
+            "no_repeat_ngram_size": max(0, args.no_repeat_ngram),
+        }
+        if use_sampling:
+            gen_kwargs["temperature"] = args.temperature
+            gen_kwargs["top_p"] = args.top_p
+
         with torch.no_grad():
-            out_ids = model.generate(
-                **inputs,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=False,
-                num_beams=1,
-            )
+            out_ids = model.generate(**inputs, **gen_kwargs)
 
         pred = tokenizer.decode(out_ids[0], skip_special_tokens=True).strip()
         ref = row["response"]

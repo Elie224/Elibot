@@ -2,6 +2,7 @@ param(
     [string]$ProjectRoot = "C:\Users\KOURO\Desktop\chatbot",
     [string]$PythonPath = "C:\Users\KOURO\Desktop\chatbot\.venv_gpu\Scripts\python.exe",
     [string]$RunnerScript = "weekly_train_runner_fr.py",
+    [string]$BestLoggerScript = "scripts/log_best_checkpoint.py",
     [ValidateSet("balanced", "strict")]
     [string]$VisionProfile = "strict",
     [switch]$DryRun,
@@ -86,6 +87,39 @@ if ($ExtraRunnerArgs.Count -gt 0) {
 try {
     & $PythonPath @arguments *>> $logFile
     $exitCode = $LASTEXITCODE
+
+    if ($exitCode -eq 0 -and -not $DryRun) {
+        $bestLoggerPath = Join-Path $ProjectRoot $BestLoggerScript
+        if (Test-Path $bestLoggerPath) {
+            $bestArgs = @(
+                $bestLoggerPath,
+                "--project-root", $ProjectRoot,
+                "--eval-json", "reports/eval_weekly_latest.json",
+                "--business-json", "reports/eval_business_weekly.json",
+                "--conversation-json", "reports/eval_conversation_weekly.json",
+                "--run-report", "reports/weekly_train_runner_report.json",
+                "--feeding-report", "reports/feeding_pipeline_report.json",
+                "--model-dir", "models/chatbot-fr-flan-t5-small-weekly",
+                "--tag", ("weekly_scheduled_" + $VisionProfile),
+                "--latest-best-json", "reports/best_checkpoint_latest.json",
+                "--history-jsonl", "reports/best_checkpoint_history.jsonl",
+                "--snapshots-dir", "reports/best_snapshots"
+            )
+
+            & $PythonPath @bestArgs *>> $logFile
+            $bestExitCode = $LASTEXITCODE
+            if ($bestExitCode -ne 0) {
+                "[$(Get-Date -Format o)] WARN: best checkpoint logger failed (exit=$bestExitCode)." | Out-File -FilePath $logFile -Append -Encoding utf8
+            }
+            else {
+                "[$(Get-Date -Format o)] INFO: best checkpoint logger completed." | Out-File -FilePath $logFile -Append -Encoding utf8
+            }
+        }
+        else {
+            "[$(Get-Date -Format o)] WARN: best checkpoint logger script missing: $BestLoggerScript" | Out-File -FilePath $logFile -Append -Encoding utf8
+        }
+    }
+
     "[$(Get-Date -Format o)] END weekly training run (exit=$exitCode)" | Out-File -FilePath $logFile -Append -Encoding utf8
     exit $exitCode
 }

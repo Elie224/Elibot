@@ -20,6 +20,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-input-length", type=int, default=512)
     parser.add_argument("--use-slot-memory", action="store_true")
+    parser.add_argument(
+        "--allow-rule-memory",
+        action="store_true",
+        help="If enabled, allow rule-based direct replies during evaluation. Disabled by default for model-only scoring.",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=96)
     parser.add_argument("--no-repeat-ngram-size", type=int, default=3)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -232,7 +237,11 @@ def main() -> None:
             if args.use_slot_memory:
                 update_profile_from_user_text(turn["user"], profile)
 
-            direct = maybe_rule_reply(turn["user"], profile) if args.use_slot_memory else None
+            direct = (
+                maybe_rule_reply(turn["user"], profile)
+                if (args.use_slot_memory and args.allow_rule_memory)
+                else None
+            )
 
             if direct is not None:
                 answer = direct
@@ -286,6 +295,7 @@ def main() -> None:
         "device": device,
         "history_turns": args.history_turns,
         "use_slot_memory": args.use_slot_memory,
+        "allow_rule_memory": args.allow_rule_memory,
         "scenarios": len(scenarios),
         "memory_recall_rate": round(memory_recall, 4),
         "scenario_scores": {

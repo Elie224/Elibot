@@ -137,6 +137,17 @@ HALLUCINATION_RISK_PATTERNS = [
     r"\bendpoint\s+fictif\b",
     r"\bworkflow\s+impossible\b",
     r"\b100%\s+garanti\b",
+    r"\bnavigation\s+privee\b",
+    r"\bnavigation\s+privée\b",
+    r"\bextensions?\b",
+    r"\bmot\s+de\s+passe\s+oublie\b",
+    r"\bmot\s+de\s+passe\s+oubli[eé]\b",
+    r"\bsuivez\s+les\s+instructions\s+recues\s+par\s+email\b",
+    r"\bsuivez\s+les\s+instructions\s+re[cç]ues\s+par\s+email\b",
+    r"\bverification\s+rapide\b",
+    r"\bv[eé]rification\s+rapide\b",
+    r"\bmode\s+incognito\b",
+    r"\bcompte\s+(bloque|bloqu[eé])\b",
 ]
 
 LOW_SIGNAL_RESPONSES = {
@@ -160,6 +171,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--signature-dataset", default="data/processed/chatbot_train_fr_signature_v2_domain.csv")
     parser.add_argument("--signature-datasets", nargs="*", default=[])
     parser.add_argument("--core-datasets", nargs="*", default=[])
+    parser.add_argument("--ml-deep-datasets", nargs="*", default=[])
     parser.add_argument("--agent-datasets", nargs="*", default=[])
     parser.add_argument("--memory-datasets", nargs="*", default=[])
     parser.add_argument("--out-feedback", default="data/processed/chatbot_train_fr_feedback_weekly.csv")
@@ -170,12 +182,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-feedback-rows", type=int, default=30000)
     parser.add_argument("--max-signature-rows", type=int, default=15000)
     parser.add_argument("--max-core-rows", type=int, default=15000)
+    parser.add_argument("--max-ml-deep-rows", type=int, default=12000)
     parser.add_argument("--max-agent-rows", type=int, default=12000)
     parser.add_argument("--max-memory-rows", type=int, default=10000)
     parser.add_argument("--bundle-target-rows", type=int, default=10000)
     parser.add_argument("--ratio-core", type=float, default=0.40)
-    parser.add_argument("--ratio-signature", type=float, default=0.30)
-    parser.add_argument("--ratio-agent", type=float, default=0.20)
+    parser.add_argument("--ratio-ml-deep", type=float, default=0.20)
+    parser.add_argument("--ratio-signature", type=float, default=0.20)
+    parser.add_argument("--ratio-agent", type=float, default=0.10)
     parser.add_argument("--ratio-memory", type=float, default=0.10)
     parser.add_argument(
         "--strict-domain",
@@ -494,9 +508,17 @@ def _read_group_rows(paths: list[str], max_rows_per_file: int, seed: int) -> tup
     return all_rows, per_source
 
 
-def _compute_targets(total_rows: int, ratio_core: float, ratio_signature: float, ratio_agent: float, ratio_memory: float) -> dict[str, int]:
+def _compute_targets(
+    total_rows: int,
+    ratio_core: float,
+    ratio_ml_deep: float,
+    ratio_signature: float,
+    ratio_agent: float,
+    ratio_memory: float,
+) -> dict[str, int]:
     ratios = {
         "core": max(0.0, ratio_core),
+        "ml_deep": max(0.0, ratio_ml_deep),
         "signature": max(0.0, ratio_signature),
         "agent": max(0.0, ratio_agent),
         "memory": max(0.0, ratio_memory),
@@ -504,7 +526,7 @@ def _compute_targets(total_rows: int, ratio_core: float, ratio_signature: float,
 
     ratio_sum = sum(ratios.values())
     if ratio_sum <= 0.0:
-        ratios = {"core": 0.40, "signature": 0.30, "agent": 0.20, "memory": 0.10}
+        ratios = {"core": 0.40, "ml_deep": 0.20, "signature": 0.20, "agent": 0.10, "memory": 0.10}
         ratio_sum = 1.0
 
     normalized = {k: v / ratio_sum for k, v in ratios.items()}
@@ -512,7 +534,7 @@ def _compute_targets(total_rows: int, ratio_core: float, ratio_signature: float,
 
     # Distribute rounding remainder deterministically.
     remainder = total_rows - sum(targets.values())
-    for key in ["core", "signature", "agent", "memory"]:
+    for key in ["core", "ml_deep", "signature", "agent", "memory"]:
         if remainder <= 0:
             break
         targets[key] += 1
@@ -718,6 +740,7 @@ def main() -> None:
     signature_paths = list(dict.fromkeys(signature_paths))
 
     core_rows, core_sources = _read_group_rows(paths=args.core_datasets, max_rows_per_file=args.max_core_rows, seed=args.seed)
+    ml_deep_rows, ml_deep_sources = _read_group_rows(paths=args.ml_deep_datasets, max_rows_per_file=args.max_ml_deep_rows, seed=args.seed)
     signature_rows, signature_sources = _read_group_rows(paths=signature_paths, max_rows_per_file=args.max_signature_rows, seed=args.seed)
     agent_rows, agent_sources = _read_group_rows(paths=args.agent_datasets, max_rows_per_file=args.max_agent_rows, seed=args.seed)
     memory_rows, memory_sources = _read_group_rows(paths=args.memory_datasets, max_rows_per_file=args.max_memory_rows, seed=args.seed)
@@ -726,6 +749,11 @@ def main() -> None:
         core_rows,
         min_response_chars=max(20, args.min_response_chars),
         scope="core",
+    )
+    ml_deep_rows, ml_deep_clean_stats = _clean_rows_by_policy(
+        ml_deep_rows,
+        min_response_chars=max(20, args.min_response_chars),
+        scope="ml_deep",
     )
     signature_rows, signature_clean_stats = _clean_rows_by_policy(
         signature_rows,
@@ -743,26 +771,29 @@ def main() -> None:
         scope="memory",
     )
 
-    domain_filter_removed = {"core": 0, "signature": 0, "agent": 0}
+    domain_filter_removed = {"core": 0, "ml_deep": 0, "signature": 0, "agent": 0}
     if args.strict_domain:
         core_rows, domain_filter_removed["core"] = _filter_domain_rows(core_rows, args.domain_keywords)
+        ml_deep_rows, domain_filter_removed["ml_deep"] = _filter_domain_rows(ml_deep_rows, args.domain_keywords)
         signature_rows, domain_filter_removed["signature"] = _filter_domain_rows(signature_rows, args.domain_keywords)
         agent_rows, domain_filter_removed["agent"] = _filter_domain_rows(agent_rows, args.domain_keywords)
 
     targets = _compute_targets(
         total_rows=max(1, args.bundle_target_rows),
         ratio_core=args.ratio_core,
+        ratio_ml_deep=args.ratio_ml_deep,
         ratio_signature=args.ratio_signature,
         ratio_agent=args.ratio_agent,
         ratio_memory=args.ratio_memory,
     )
 
     selected_core = _sample_rows(core_rows, max_rows=targets["core"], seed=args.seed)
+    selected_ml_deep = _sample_rows(ml_deep_rows, max_rows=targets["ml_deep"], seed=args.seed)
     selected_signature = _sample_rows(signature_rows, max_rows=targets["signature"], seed=args.seed)
     selected_agent = _sample_rows(agent_rows, max_rows=targets["agent"], seed=args.seed)
     selected_memory = _sample_rows(memory_rows, max_rows=targets["memory"], seed=args.seed)
 
-    bundle_rows = selected_core + selected_signature + selected_agent + selected_memory + feedback_rows
+    bundle_rows = selected_core + selected_ml_deep + selected_signature + selected_agent + selected_memory + feedback_rows
     if args.dedupe_bundle:
         bundle_rows = _dedupe_rows(bundle_rows)
 
@@ -777,6 +808,7 @@ def main() -> None:
             "chat_log": str(chat_log_path),
             "audit_log": str(audit_log_path),
             "core_datasets": list(args.core_datasets),
+            "ml_deep_datasets": list(args.ml_deep_datasets),
             "signature_datasets": signature_paths,
             "agent_datasets": list(args.agent_datasets),
             "memory_datasets": list(args.memory_datasets),
@@ -790,6 +822,7 @@ def main() -> None:
             "audit_events": len(audits),
             "feedback_rows": len(feedback_rows),
             "core_rows": len(selected_core),
+            "ml_deep_rows": len(selected_ml_deep),
             "signature_rows": len(selected_signature),
             "agent_rows": len(selected_agent),
             "memory_rows": len(selected_memory),
@@ -797,6 +830,7 @@ def main() -> None:
         },
         "sources": {
             "core": core_sources,
+            "ml_deep": ml_deep_sources,
             "signature": signature_sources,
             "agent": agent_sources,
             "memory": memory_sources,
@@ -810,6 +844,7 @@ def main() -> None:
         },
         "cleaning_filter": {
             "core": core_clean_stats,
+            "ml_deep": ml_deep_clean_stats,
             "signature": signature_clean_stats,
             "agent": agent_clean_stats,
             "memory": memory_clean_stats,
@@ -819,11 +854,13 @@ def main() -> None:
             "min_quality_score": args.min_quality_score,
             "max_feedback_rows": args.max_feedback_rows,
             "max_core_rows": args.max_core_rows,
+            "max_ml_deep_rows": args.max_ml_deep_rows,
             "max_signature_rows": args.max_signature_rows,
             "max_agent_rows": args.max_agent_rows,
             "max_memory_rows": args.max_memory_rows,
             "bundle_target_rows": args.bundle_target_rows,
             "ratio_core": args.ratio_core,
+            "ratio_ml_deep": args.ratio_ml_deep,
             "ratio_signature": args.ratio_signature,
             "ratio_agent": args.ratio_agent,
             "ratio_memory": args.ratio_memory,

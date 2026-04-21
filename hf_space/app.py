@@ -1,6 +1,20 @@
 import gradio as gr
+import json
+import os
 import re
+import tempfile
 import torch
+from datetime import datetime, timezone
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from sklearn.datasets import make_classification
+from sklearn.linear_model import LogisticRegression
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 
@@ -37,26 +51,36 @@ OUT_DOMAIN_KEYWORDS = {
 
 MODEL_ID = "Elie224/Elibot"
 MAX_INPUT_LENGTH = 512
-MAX_NEW_TOKENS = 96
+MAX_NEW_TOKENS = 192
 TEMPERATURE = 0.0
 TOP_P = 0.9
 REPETITION_PENALTY = 1.1
 NO_REPEAT_NGRAM = 3
-HISTORY_TURNS = 4
-HISTORY_MODE = "user-only"
+HISTORY_TURNS = 6
+HISTORY_MODE = "full"
 SYSTEM_PROMPT = (
     "Tu es Elibot, un assistant specialise en analyse de donnees, IA appliquee et automatisation. "
-    "Tu reponds de facon claire, concise et professionnelle. "
+    "Tu tiens une conversation technique fluide, avec reponses pedagogiques et progressives. "
+    "Tu peux donner des definitions, des remarques d'expert, des details concrets et des exemples pratiques. "
     "Tu privilegies des reponses actionnables et bien structurees (etapes, bonnes pratiques, points de vigilance). "
     "Tu refuses poliment les sujets hors domaine et rediriges vers une demande technique."
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+CHAT_LOG_PATH = Path(os.getenv("CHAT_LOG_PATH", "/tmp/elibot_chat_events.jsonl"))
+AUDIT_LOG_PATH = Path(os.getenv("AUDIT_LOG_PATH", "/tmp/elibot_audit.jsonl"))
+PLOT_TMP_DIR = Path(tempfile.gettempdir()) / "elibot_plots"
 
 RESPONSE_MODES = ["Court", "Expert"]
 QUESTION_MARKERS = {
     "cest quoi", "ca veut dire quoi", "definition", "definir", "explique", "expliquer",
     "difference", "pourquoi", "comment", "quand", "a quoi sert", "role",
+}
+
+FOLLOWUP_MARKERS = {
+    "plus de details", "plus de detail", "detaille", "detailler", "approfondis", "approfondir",
+    "des remarques", "remarques", "ton avis", "en pratique", "donne un exemple", "explique mieux",
+    "ok et", "et du coup", "et ensuite", "pour aller plus loin",
 }
 
 CONCEPT_CARDS = [
@@ -383,6 +407,8 @@ def is_in_domain_query(user_text):
     text = _normalize_text(user_text or "")
     if not text:
         return True
+    if any(marker in text for marker in FOLLOWUP_MARKERS):
+        return True
     if text in {"bonjour", "salut", "hello", "bonsoir", "coucou", "bjr", "slt", "cc", "merci"}:
         return True
     if any(k in text for k in OUT_DOMAIN_KEYWORDS):
@@ -497,9 +523,60 @@ def clarification_reply(response_mode):
     return "Je peux mieux t'aider si tu precises: definition, implementation, ou production."
 
 
+def discussion_reply(user_text, response_mode):
+    q_norm = _normalize_text(user_text or "")
+    asks_depth = any(m in q_norm for m in {"detail", "details", "detaille", "approfond", "plus"})
+    asks_remarks = any(m in q_norm for m in {"remarque", "remarques", "avis", "critique"})
+
+    if not (asks_depth or asks_remarks):
+        return None
+
+    if "pipeline" in q_norm or "ml" in q_norm or "machine learning" in q_norm:
+        court = (
+            "Remarques pro: clarifier la metrique metier, verrouiller anti-data leakage, "
+            "et monitorer drift/performance en production."
+        )
+        expert = (
+            "Remarques d'expert sur un projet ML (version detaillee):\n"
+            "- Definition utile: un bon modele ne suffit pas, il faut un systeme fiable bout en bout.\n"
+            "- Point critique 1: eviter la fuite de donnees (split + preprocessing correctement ordonnes).\n"
+            "- Point critique 2: aligner la metrique avec le cout metier (precision/recall/seuil).\n"
+            "- Point critique 3: deploiement observable (latence, erreurs, drift, qualite predictive).\n"
+            "- Point critique 4: boucle d'amelioration continue (analyse d'erreurs -> retraining cible).\n"
+            "Si tu veux, je peux te faire une checklist operationnelle en 10 points pour ton cas."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
+    if "fastapi" in q_norm or "api" in q_norm:
+        court = "Remarques API: contrats stricts, timeouts/retries, observabilite, versioning et rollback."
+        expert = (
+            "Remarques d'expert pour une API ML robuste:\n"
+            "- Definition: une API production doit etre fiable, mesurable et reversible.\n"
+            "- Details techniques: schema strict, validation metier, gestion d'erreurs homogène.\n"
+            "- Remarque ops: monitorer P95/P99, taux d'erreur et saturation ressources.\n"
+            "- Gouvernance: version du modele + version des features + plan de rollback.\n"
+            "Si tu veux, je peux te proposer une structure de dossier FastAPI prete a coder."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
+    court = "Je peux te donner des remarques et details utiles; precise si tu veux angle data, modelisation ou production."
+    expert = (
+        "Je peux approfondir en mode expert avec des remarques concretes. Choisis un angle:\n"
+        "1) Data (qualite, fuite, features),\n"
+        "2) Modelisation (metriques, seuil, erreurs),\n"
+        "3) Production (API, monitoring, retraining).\n"
+        "Donne ton contexte et je te fais une analyse detaillee et actionnable."
+    )
+    return pick_mode_text(response_mode, court, expert)
+
+
 def fallback_reply(user_text, profile, response_mode="Court"):
     q = (user_text or "").lower().strip()
     q_norm = re.sub(r"[^a-zà-öø-ÿ0-9\s]", "", q)
+
+    discuss = discussion_reply(user_text, response_mode)
+    if discuss:
+        return discuss
 
     if not is_in_domain_query(q):
         return out_of_domain_reply()
@@ -645,6 +722,10 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
             "- monitoring: drift, latence, erreurs, metriques metier."
         )
         return pick_mode_text(response_mode, court, expert)
+
+    discuss = discussion_reply(user_text, response_mode)
+    if discuss:
+        return discuss
 
     # Always prioritize concept cards before domain gating.
     concept = concept_reply(q_norm, response_mode)
@@ -820,6 +901,193 @@ def build_prompt(history, user_text, profile):
     return "\n".join(lines)
 
 
+def _append_jsonl_safe(path: Path, payload: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        # Logging must never break chat responses.
+        return
+
+
+def _log_chat_event(user_text: str, answer: str, response_mode: str, direct_hit: bool, confidence: float) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "timestamp": now,
+        "user": user_text,
+        "assistant": answer,
+        "response_mode": response_mode,
+        "direct_hit": bool(direct_hit),
+        "confidence": round(float(confidence), 4),
+        "source": "hf_space",
+    }
+    _append_jsonl_safe(CHAT_LOG_PATH, payload)
+
+
+def _log_audit_event(kind: str, user_text: str, answer: str, confidence: float) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "timestamp": now,
+        "kind": kind,
+        "user": user_text,
+        "assistant_len": len(answer or ""),
+        "confidence": round(float(confidence), 4),
+        "source": "hf_space",
+    }
+    _append_jsonl_safe(AUDIT_LOG_PATH, payload)
+
+
+def _extract_python_blocks(text: str) -> list[str]:
+    if not text:
+        return []
+    blocks = re.findall(r"```python\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _is_safe_plot_code(code: str) -> tuple[bool, str]:
+    if not code or len(code) > 7000:
+        return False, "Code vide ou trop long."
+
+    lowered = code.lower()
+    blocked_tokens = [
+        "import os",
+        "from os",
+        "import sys",
+        "from sys",
+        "import subprocess",
+        "from subprocess",
+        "import socket",
+        "from socket",
+        "import requests",
+        "from requests",
+        "import pathlib",
+        "from pathlib",
+        "import shutil",
+        "from shutil",
+        "open(",
+        "exec(",
+        "eval(",
+        "__",
+    ]
+    if any(tok in lowered for tok in blocked_tokens):
+        return False, "Code refuse: operation non autorisee."
+
+    allowed_import_roots = {
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "seaborn",
+        "sklearn",
+    }
+    for line in code.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("import "):
+            mod = stripped.replace("import", "", 1).strip().split(" as ")[0].split(",")[0].strip()
+            root = mod.split(".")[0]
+            if root not in allowed_import_roots:
+                return False, f"Import non autorise: {root}"
+        if stripped.startswith("from "):
+            root = stripped.replace("from", "", 1).strip().split("import")[0].strip().split(".")[0]
+            if root not in allowed_import_roots:
+                return False, f"Import non autorise: {root}"
+
+    return True, "ok"
+
+
+def _execute_plot_code(code: str) -> tuple[str | None, str]:
+    safe, reason = _is_safe_plot_code(code)
+    if not safe:
+        return None, reason
+
+    PLOT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    plt.close("all")
+
+    X, y = make_classification(
+        n_samples=400,
+        n_features=6,
+        n_informative=4,
+        n_redundant=0,
+        random_state=42,
+    )
+    X_train, X_test = X[:300], X[300:]
+    y_train, y_test = y[:300], y[300:]
+    model = LogisticRegression(max_iter=1000).fit(X_train, y_train)
+    feature_names = [f"f{i}" for i in range(X.shape[1])]
+
+    safe_builtins = {
+        "abs": abs,
+        "all": all,
+        "any": any,
+        "dict": dict,
+        "enumerate": enumerate,
+        "float": float,
+        "int": int,
+        "len": len,
+        "list": list,
+        "max": max,
+        "min": min,
+        "print": print,
+        "range": range,
+        "set": set,
+        "str": str,
+        "sum": sum,
+        "tuple": tuple,
+        "zip": zip,
+    }
+
+    env = {
+        "__builtins__": safe_builtins,
+        "np": np,
+        "pd": pd,
+        "plt": plt,
+        "sns": sns,
+        "X": X,
+        "y": y,
+        "X_train": X_train,
+        "X_test": X_test,
+        "y_train": y_train,
+        "y_test": y_test,
+        "model": model,
+        "feature_names": feature_names,
+    }
+
+    try:
+        exec(compile(code, "<assistant_plot_code>", "exec"), env, env)
+    except Exception as exc:
+        return None, f"Execution echec: {type(exc).__name__}: {exc}"
+
+    fig = plt.gcf()
+    if not fig.get_axes():
+        return None, "Aucun graphe detecte."
+
+    out_path = PLOT_TMP_DIR / f"plot_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')}.png"
+    fig.savefig(out_path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    return str(out_path), "Graphe genere avec succes."
+
+
+def render_last_python_plot(history):
+    history = history or []
+    if not history:
+        return None, "Aucune reponse a analyser."
+
+    last_answer = history[-1][1] if history[-1] else ""
+    blocks = _extract_python_blocks(last_answer)
+    if not blocks:
+        return None, "Aucun bloc ```python``` trouve dans la derniere reponse."
+
+    # Execute the last block first; if it fails, try previous ones.
+    for block in reversed(blocks):
+        img_path, status = _execute_plot_code(block)
+        if img_path:
+            return img_path, status
+
+    return None, status
+
+
 def chat(message, history, response_mode="Court"):
     history = history or []
     state = {
@@ -835,11 +1103,23 @@ def chat(message, history, response_mode="Court"):
 
     update_profile_from_user_text(user_text, state["profile"])
     direct = maybe_rule_reply(user_text, state["profile"], response_mode=response_mode)
+
+    # If the user writes an implicit follow-up ("approfondis", "plus de details", etc.),
+    # reuse the previous user topic so the answer stays contextual instead of generic.
+    if (not direct) and state["history"]:
+        q_norm = _normalize_text(user_text)
+        if any(marker in q_norm for marker in FOLLOWUP_MARKERS):
+            prev_user = state["history"][-1][0]
+            contextual_user_text = f"{prev_user} {user_text}"
+            direct = maybe_rule_reply(contextual_user_text, state["profile"], response_mode=response_mode)
+
     if direct:
         answer = direct
         conf = estimate_answer_confidence(user_text, answer, direct_hit=True)
         if conf < 0.45:
             answer = clarification_reply(response_mode)
+            _log_audit_event("low_confidence_direct", user_text, answer, conf)
+        _log_chat_event(user_text, answer, response_mode=response_mode, direct_hit=True, confidence=conf)
         state["history"].append((user_text, answer))
         return state["history"], state["history"]
 
@@ -872,7 +1152,9 @@ def chat(message, history, response_mode="Court"):
     conf = estimate_answer_confidence(user_text, answer, direct_hit=False)
     if not answer or is_low_quality_answer(answer) or conf < 0.40:
         answer = fallback_reply(user_text, state["profile"], response_mode=response_mode)
+        _log_audit_event("fallback_generation", user_text, answer, conf)
 
+    _log_chat_event(user_text, answer, response_mode=response_mode, direct_hit=False, confidence=conf)
     state["history"].append((user_text, answer))
     return state["history"], state["history"]
 
@@ -954,9 +1236,16 @@ with gr.Blocks(title="Elibot", css=APP_CSS, theme=gr.themes.Soft()) as demo:
             send = gr.Button("Envoyer", elem_id="send-btn", variant="primary")
             clear = gr.Button("Reinitialiser", elem_id="reset-btn")
 
+        with gr.Row():
+            run_plot = gr.Button("Executer le code Python (graphe)")
+
+        plot_image = gr.Image(label="Graphe genere", type="filepath")
+        plot_status = gr.Markdown(value="Aucun graphe execute.")
+
     send.click(handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg])
     msg.submit(handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg])
     clear.click(lambda: ([], [], ""), inputs=None, outputs=[chatbot, state, msg])
+    run_plot.click(render_last_python_plot, inputs=[state], outputs=[plot_image, plot_status])
 
     quick_1.click(lambda: "Peux-tu expliquer un pipeline machine learning de bout en bout ?", outputs=[msg]).then(
         handle_submit, inputs=[msg, state, response_mode], outputs=[chatbot, state, msg]
