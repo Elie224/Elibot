@@ -728,6 +728,40 @@ def maybe_rule_reply(user_text, profile, response_mode="Court"):
         )
         return pick_mode_text(response_mode, court, expert)
 
+    if (
+        ("pipeline" in q_norm)
+        and ("ml" in q_norm or "machine learning" in q_norm)
+        and ("fraude" in q_norm or "fraud" in q_norm)
+        and ("temps reel" in q_norm or "temps reel" in q or "reel" in q_norm or "real time" in q_norm)
+    ):
+        court = (
+            "Pour la fraude en temps reel, il faut raisonner en 4 blocs: signal (donnees), score (modele), "
+            "decision (regles + seuils), et action (blocage, challenge, revue manuelle)."
+        )
+        expert = (
+            "Excellente question. Pour detecter la fraude en temps reel, la logique pro n'est pas "
+            "\"entrainer un modele\" puis deployer. Il faut construire une chaine de decision complete, avec un compromis clair entre fraude evitee et friction client.\n\n"
+            "1) Raisonnement metier (avant la technique)\n"
+            "- Objectif: reduire les pertes fraude sans casser l'experience des bons clients.\n"
+            "- KPI a suivre ensemble: taux de fraude capturee, faux positifs, taux de challenge, latence de decision.\n"
+            "- Regle cle: en fraude, un faux positif coute du churn; un faux negatif coute de l'argent. Le seuil se choisit avec le metier, pas uniquement avec F1.\n\n"
+            "2) Architecture cible temps reel\n"
+            "- Ingestion evenementielle (paiement, device, geoloc, historique court).\n"
+            "- Feature store online pour recuperer des variables fraiches en quelques millisecondes.\n"
+            "- Service de scoring (modele + regles expertes) expose en API faible latence.\n"
+            "- Moteur de decision: accepter, challenger (OTP/3DS), ou bloquer.\n\n"
+            "3) Strategie modelisation\n"
+            "- Baseline interpretable d'abord (logistic/XGBoost simple), puis enrichissement progressif.\n"
+            "- Dataset desequilibre: class weights, seuil optimise cout-risque, monitoring precision/recall par segment.\n"
+            "- Evaluation temporelle obligatoire: split par temps pour simuler la vraie prod et eviter les illusions offline.\n\n"
+            "4) Exploitation production\n"
+            "- Observabilite en continu: latence P95, drift data/concept, taux de rejet par segment, alertes.\n"
+            "- Boucle d'apprentissage: feedback analystes fraude, labellisation retardee, retraining pilote par seuils.\n"
+            "- Plan de securite: fallback regles si modele indisponible, versioning strict, rollback instantane.\n\n"
+            "Si tu veux, je peux te donner une architecture de reference concrete (Kafka + Feature Store + FastAPI + Redis + monitoring) avec budget latence cible < 150 ms."
+        )
+        return pick_mode_text(response_mode, court, expert)
+
     discuss = discussion_reply(user_text, response_mode)
     if discuss:
         return discuss
